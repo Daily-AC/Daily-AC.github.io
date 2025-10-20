@@ -1,0 +1,4549 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>赛博女友 另一个时空的她 v1.0.0</title>
+    <link rel="icon" type="image/x-icon" href="./resource/ico.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="./resource/ico.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="./resource/ico.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="./resource/ico.png">
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script type="module">
+        // Firebase v10+ CDN ESM 初始化（请替换为你的真实配置）
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js';
+        import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, updateProfile } from 'https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js';
+        import { getFirestore, doc, setDoc, getDoc, collection, addDoc, getDocs, query, where, updateDoc, deleteDoc, onSnapshot, orderBy, limit, limitToLast, endBefore, startAfter, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.3/firebase-firestore.js';
+
+        window.__firebase = { ready: false };
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyDHNpPbI1Pm7O9EnaCvhnFqov3l6WvSUxI",
+            authDomain: "ai-grilfirend.firebaseapp.com",
+            projectId: "ai-grilfirend",
+            storageBucket: "ai-grilfirend.firebasestorage.app",
+            messagingSenderId: "56625080751",
+            appId: "1:56625080751:web:35d082aa26167312e6e75a",
+            measurementId: "G-T75JFYKP1P"
+        };
+
+        try {
+            const app = initializeApp(firebaseConfig);
+            const auth = getAuth(app);
+            const db = getFirestore(app);
+            
+            // 将Firestore函数暴露到全局
+            window.__firebase = { 
+                app, 
+                auth, 
+                db, 
+                ready: true,
+                firestore: {
+                    doc,
+                    collection,
+                    getDocs,
+                    query,
+                    orderBy,
+                    getDoc,
+                    updateDoc,
+                    deleteDoc,
+                    serverTimestamp,
+                    setDoc,
+                    addDoc,
+                    where
+                }
+            };
+
+            onAuthStateChanged(auth, async (user) => {
+                window.__currentUser = user || null;
+                document.dispatchEvent(new CustomEvent('auth:changed', { detail: { user } }));
+            });
+        } catch (e) {
+            console.warn('Firebase 初始化失败，自动降级为游客模式：', e);
+        }
+
+        // 暴露常用方法（供下方非 module 脚本调用）
+        window.__fbApi = {
+            // 获取所有用户（仅超级管理员）
+            async adminGetAllUsers() {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) throw new Error('未登录');
+                const profile = await this.getUserProfile();
+                if (!profile || profile.role !== 'superadmin') throw new Error('需要超级管理员权限');
+                
+                const qSnap = await getDocs(collection(db, 'users'));
+                return qSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+            },
+
+            // 更新用户角色（仅超级管理员）
+            async adminUpdateUserRole(userId, newRole) {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) throw new Error('未登录');
+                const profile = await this.getUserProfile();
+                if (!profile || profile.role !== 'superadmin') throw new Error('需要超级管理员权限');
+                
+                // 不能修改自己的角色
+                if (userId === user.uid) {
+                    throw new Error('不能修改自己的角色');
+                }
+                
+                await updateDoc(doc(db, 'users', userId), {
+                    role: newRole
+                });
+            },
+
+            // 删除用户（仅超级管理员）
+            async adminDeleteUser(userId) {
+                const { db, auth } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) throw new Error('未登录');
+                const profile = await this.getUserProfile();
+                if (!profile || profile.role !== 'superadmin') throw new Error('需要超级管理员权限');
+                
+                // 不能删除自己
+                if (userId === user.uid) {
+                    throw new Error('不能删除自己');
+                }
+                
+                // 删除用户的所有对话
+                const conversationsRef = collection(db, 'users', userId, 'conversations');
+                const convSnap = await getDocs(conversationsRef);
+                
+                for (const convDoc of convSnap.docs) {
+                    // 删除对话中的所有消息
+                    const messagesRef = collection(db, 'users', userId, 'conversations', convDoc.id, 'messages');
+                    const messagesSnap = await getDocs(messagesRef);
+                    
+                    for (const msgDoc of messagesSnap.docs) {
+                        await deleteDoc(doc(db, 'users', userId, 'conversations', convDoc.id, 'messages', msgDoc.id));
+                    }
+                    
+                    // 删除对话
+                    await deleteDoc(doc(db, 'users', userId, 'conversations', convDoc.id));
+                }
+                
+                // 删除用户设置
+                try {
+                    await deleteDoc(doc(db, 'users', userId, 'meta', 'settings'));
+                } catch (e) {
+                    console.log('用户设置不存在，跳过删除');
+                }
+                
+                // 删除用户档案
+                await deleteDoc(doc(db, 'users', userId));
+                
+                console.log('用户Firestore数据已删除');
+            },
+
+            // 获取用户对话（仅超级管理员）
+            async adminGetUserConversations(userId) {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) throw new Error('未登录');
+                const profile = await this.getUserProfile();
+                if (!profile || profile.role !== 'superadmin') throw new Error('需要超级管理员权限');
+                
+                const conversationsRef = collection(db, 'users', userId, 'conversations');
+                const q = query(conversationsRef, orderBy('updatedAt', 'desc'));
+                const qSnap = await getDocs(q);
+                return qSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+            },
+
+            // 删除对话（仅超级管理员）
+            async adminDeleteConversation(userId, conversationId) {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) throw new Error('未登录');
+                const profile = await this.getUserProfile();
+                if (!profile || profile.role !== 'superadmin') throw new Error('需要超级管理员权限');
+                
+                // 删除对话中的所有消息
+                const messagesRef = collection(db, 'users', userId, 'conversations', conversationId, 'messages');
+                const messagesSnap = await getDocs(messagesRef);
+                
+                for (const msgDoc of messagesSnap.docs) {
+                    await deleteDoc(doc(db, 'users', userId, 'conversations', conversationId, 'messages', msgDoc.id));
+                }
+                
+                // 删除对话
+                await deleteDoc(doc(db, 'users', userId, 'conversations', conversationId));
+            },
+
+            // 生成key（管理员和超级管理员都可以）
+            async adminAddKey({ account }) {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) throw new Error('未登录');
+                const profile = await this.getUserProfile();
+                if (!profile || (profile.role !== 'admin' && profile.role !== 'superadmin')) throw new Error('需要管理员权限');
+                console.log('Hello ' + profile.role + ' ' + user.displayName);
+                const randomKey = Math.random().toString(36).slice(2, 10).toUpperCase();
+                await addDoc(collection(db, 'keys'), {
+                    key: randomKey,
+                    account: account || '',
+                    username: '',
+                    used: false,
+                    usedBy: '',
+                    createdAt: Date.now()
+                });
+                return randomKey;
+            },
+
+            // 列出所有key（管理员和超级管理员都可以）
+            async adminListKeys() {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) throw new Error('未登录');
+                const profile = await this.getUserProfile();
+                if (!profile || (profile.role !== 'admin' && profile.role !== 'superadmin')) throw new Error('需要管理员权限');
+                
+                const qSnap = await getDocs(collection(db, 'keys'));
+                return qSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+            },
+
+            // 删除key（管理员和超级管理员都可以）
+            async adminDeleteKeys(ids = []) {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) throw new Error('未登录');
+                const profile = await this.getUserProfile();
+                if (!profile || (profile.role !== 'admin' && profile.role !== 'superadmin')) throw new Error('需要管理员权限');
+                
+                await Promise.all(ids.map(id => deleteDoc(doc(db, 'keys', id))));
+            },
+            // 在 window.__fbApi 的 register 方法中修改
+            async register({ account, username, password, confirmPassword, inviteKey }) {
+                const { auth, db, ready } = window.__firebase;
+                if (!ready) throw new Error('Firebase 未初始化');
+                if (!account || !username || !password || !confirmPassword) throw new Error('请填写完整信息');
+                if (password !== confirmPassword) throw new Error('两次密码不一致');
+
+                const isRoot = username.trim().toLowerCase() === 'root';
+
+                // 检查是否已存在root用户
+                if (isRoot) {
+                    const rootQuery = query(collection(db, 'users'), where('username', '==', 'root'));
+                    const rootSnap = await getDocs(rootQuery);
+                    if (!rootSnap.empty) {
+                        throw new Error('root用户已存在，无法再次注册');
+                    }
+                }
+
+                if (!isRoot) {
+                    if (!inviteKey) throw new Error('需要邀请码');
+                    // 校验 key 是否存在且未使用
+                    const q = query(collection(db, 'keys'), where('key', '==', inviteKey));
+                    const snap = await getDocs(q);
+                    if (snap.empty) throw new Error('邀请码不存在');
+                    const keyDoc = snap.docs[0];
+                    const keyData = keyDoc.data();
+                    if (keyData.used) throw new Error('邀请码已被使用');
+                }
+
+                // 使用账号作为邮箱前缀（本地演示：构造伪邮箱）
+                const email = `${account}@example.com`;
+                const cred = await createUserWithEmailAndPassword(auth, email, password);
+                await updateProfile(cred.user, { displayName: username });
+
+                // 写入用户档案
+                await setDoc(doc(db, 'users', cred.user.uid), {
+                    account,
+                    username,
+                    role: isRoot ? 'superadmin' : 'user', // 只有root用户设为superadmin
+                    createdAt: Date.now()
+                });
+
+                if (!isRoot) {
+                    // 绑定 key
+                    const q2 = query(collection(db, 'keys'), where('key', '==', inviteKey));
+                    const snap2 = await getDocs(q2);
+                    const keyDoc2 = snap2.docs[0];
+                    await updateDoc(doc(db, 'keys', keyDoc2.id), {
+                        used: true,
+                        usedBy: cred.user.uid,
+                        usedAt: Date.now(),
+                        account: account,
+                        username: username
+                    });
+                }
+
+                return cred.user;
+            },
+            async login({ account, password }) {
+                const { auth, ready } = window.__firebase;
+                if (!ready) throw new Error('Firebase 未初始化');
+                const email = `${account}@example.com`;
+                const cred = await signInWithEmailAndPassword(auth, email, password);
+                return cred.user;
+            },
+            async logout() {
+                const { auth, ready } = window.__firebase;
+                if (!ready) return;
+                await signOut(auth);
+            },
+            async getUserProfile() {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) return null;
+                const snap = await getDoc(doc(db, 'users', user.uid));
+                return snap.exists() ? snap.data() : null;
+            },
+            // 确保会话文档存在
+            async ensureConversation(conversationId, title = '对话') {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) return null;
+                const convRef = doc(db, 'users', user.uid, 'conversations', String(conversationId));
+                const snap = await getDoc(convRef);
+                if (!snap.exists()) {
+                    await setDoc(convRef, {
+                        title: title,
+                        createdAt: serverTimestamp(),
+                        updatedAt: serverTimestamp()
+                    });
+                }
+                return convRef;
+            },
+            // 保存消息
+            async saveMessage(conversationId, { role, content, time }) {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) return;
+                const convRef = await this.ensureConversation(conversationId);
+                await addDoc(collection(convRef, 'messages'), {
+                    role,
+                    content,
+                    time,
+                    createdAt: serverTimestamp()
+                });
+                await updateDoc(convRef, { updatedAt: serverTimestamp() });
+            },
+            // 订阅最新消息（实时）
+            subscribeLatest(conversationId, pageSize, onChange) {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) return () => {};
+                const convRef = doc(db, 'users', user.uid, 'conversations', String(conversationId));
+                const qLatest = query(collection(convRef, 'messages'), orderBy('createdAt', 'asc'), limitToLast(pageSize));
+                return onSnapshot(qLatest, (snapshot) => {
+                    const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data(), _snap: d }));
+                    onChange(docs);
+                });
+            },
+            // 在 window.__fbApi 对象中修改 loadOlder 方法
+            async loadOlder(conversationId, firstDocSnap, pageSize) {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user || !firstDocSnap) {
+                    console.log('loadOlder: 用户未登录或没有快照');
+                    return { items: [], first: null };
+                }
+                
+                try {
+                    const convRef = doc(db, 'users', user.uid, 'conversations', String(conversationId));
+                    const qOlder = query(
+                        collection(convRef, 'messages'), 
+                        orderBy('createdAt', 'asc'), 
+                        endBefore(firstDocSnap), 
+                        limitToLast(pageSize)
+                    );
+                    
+                    const snap = await getDocs(qOlder);
+                    const items = snap.docs.map(d => ({ id: d.id, ...d.data(), _snap: d }));
+                    
+                    console.log('loadOlder 查询结果:', {
+                        conversationId,
+                        pageSize,
+                        returnedCount: items.length,
+                        hasDocs: !snap.empty
+                    });
+                    
+                    return { 
+                        items, 
+                        first: snap.docs[0] || null  // 返回新的第一条消息的快照
+                    };
+                } catch (error) {
+                    console.error('loadOlder 错误:', error);
+                    throw error;
+                }
+            },
+            
+            // 保存/读取设置
+            async saveSettings(settings) {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) {
+                    localStorage.setItem('settings:guest', JSON.stringify(settings));
+                    return;
+                }
+                await setDoc(doc(db, 'users', user.uid, 'meta', 'settings'), settings, { merge: true });
+            },
+            async loadSettings() {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) {
+                    const raw = localStorage.getItem('settings:guest');
+                    return raw ? JSON.parse(raw) : null;
+                }
+                const snap = await getDoc(doc(db, 'users', user.uid, 'meta', 'settings'));
+                return snap.exists() ? snap.data() : null;
+            },
+            // 在 window.__fbApi 对象中添加删除对话的方法
+            async deleteConversation(conversationId) {
+                const { db } = window.__firebase;
+                const user = window.__currentUser;
+                if (!user) throw new Error('未登录');
+                
+                // 删除对话中的所有消息
+                const messagesRef = collection(db, 'users', user.uid, 'conversations', conversationId, 'messages');
+                const messagesSnap = await getDocs(messagesRef);
+                
+                for (const msgDoc of messagesSnap.docs) {
+                    await deleteDoc(doc(db, 'users', user.uid, 'conversations', conversationId, 'messages', msgDoc.id));
+                }
+                
+                // 删除对话本身
+                await deleteDoc(doc(db, 'users', user.uid, 'conversations', conversationId));
+            }
+        };
+    </script>
+    <style>
+        /* ===== CSS 变量定义 ===== */
+        :root {
+            --primary-color: #ff6b9d;
+            --secondary-color: #ffa8cb;
+            --bg-color: #fff5f9;
+            --sidebar-bg: #ffeef5;
+            --text-color: #333;
+            --light-text: #666;
+            --border-color: #ffd6e6;
+            --user-msg-bg: #ff6b9d;
+            --ai-msg-bg: #f0f0f0;
+            --shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            --sidebar-width: 280px;
+            --header-height: 70px;
+            --mobile-header-height: 60px;
+            --mobile-input-height: 80px;
+        }
+
+        /* ===== 基础样式 ===== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            height: 100vh;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* ===== 背景视频 ===== */
+        #background-video {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0.5;
+            z-index: -1;
+        }
+
+        /* ===== 移动端遮罩 ===== */
+        .mobile-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 90;
+            display: none;
+        }
+
+        /* ===== 侧边栏样式 ===== */
+        .sidebar {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: var(--sidebar-width);
+            height: 100vh;
+            background-color: var(--sidebar-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            overflow-y: auto;
+            transition: transform 0.3s ease;
+            z-index: 100;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+        }
+
+        .sidebar.collapsed {
+            transform: translateX(-100%);
+        }
+
+        .sidebar.open {
+            transform: translateX(0);
+        }
+
+        /* 侧边栏logo */
+        .logo {
+            display: flex;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            background-color: var(--primary-color);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 10px;
+            color: white;
+        }
+
+        .logo h1 {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+
+        /* 侧边栏按钮组 */
+        .user-buttons-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 15px;
+            width: 100%;
+        }
+
+        .button-with-tag {
+            position: relative;
+            width: 100%;
+        }
+
+        /* 统一侧边栏按钮样式 */
+        .new-chat-btn, 
+        .settings-btn, 
+        .auth-btn, 
+        .admin-btn {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 12px 16px;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 12px;
+            transition: all 0.3s ease;
+            width: 100%;
+            box-shadow: var(--shadow);
+        }
+
+        .new-chat-btn:hover, 
+        .settings-btn:hover, 
+        .auth-btn:hover, 
+        .admin-btn:hover {
+            background-color: #ff4d8a;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+        }
+
+        .new-chat-btn:active, 
+        .settings-btn:active, 
+        .auth-btn:active, 
+        .admin-btn:active {
+            transform: translateY(0);
+        }
+
+        .new-chat-btn i, 
+        .settings-btn i, 
+        .auth-btn i, 
+        .admin-btn i {
+            margin-right: 8px;
+            font-size: 1rem;
+        }
+
+        /* 特殊按钮样式 */
+        #refresh-conversations {
+            background-color: var(--secondary-color);
+            margin-top: 8px;
+        }
+
+        #refresh-conversations:hover {
+            background-color: #ff8cb8;
+        }
+
+        .user-buttons-group .settings-btn {
+            margin-bottom: 0;
+        }
+
+        /* 对话历史区域 */
+        .chat-history {
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+
+        .history-item {
+            padding: 12px 15px;
+            border-radius: 10px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+        }
+
+        .history-item:hover {
+            background-color: #ffd6e6;
+        }
+
+        .history-item.active {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .history-item i {
+            margin-right: 10px;
+        }
+
+        /* 空白状态样式 */
+        .empty-state {
+            padding: 20px;
+            text-align: center;
+            color: var(--light-text);
+        }
+
+        .empty-state i {
+            font-size: 2rem;
+            margin-bottom: 10px;
+            opacity: 0.5;
+        }
+
+        .empty-state p {
+            margin: 0;
+            font-size: 0.9rem;
+        }
+
+        /* ===== 主聊天区域样式 ===== */
+        .chat-container {
+            margin-left: 0;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            transition: margin-left 0.3s ease;
+        }
+
+        .chat-container.sidebar-open {
+            margin-left: 0;
+            width: 100%;
+        }
+
+        /* 聊天头部 */
+        .chat-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            background-color: white;
+            height: var(--header-height);
+            position: relative;
+            z-index: 10;
+            transition: margin-left 0.3s ease, width 0.3s ease;
+        }
+
+        .toggle-sidebar {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            color: var(--primary-color);
+            cursor: pointer;
+            margin-right: 15px;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+        }
+
+        .toggle-sidebar:hover {
+            background-color: #ffd6e6;
+        }
+
+        .gf-avatar {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background-color: var(--secondary-color);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.5rem;
+            margin-right: 15px;
+        }
+
+        .gf-info h2 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .gf-info p {
+            color: var(--light-text);
+            font-size: 0.9rem;
+        }
+
+        /* 消息区域 */
+        .chat-messages {
+            flex-grow: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            max-width: 1250px;
+            margin: 0 auto;
+            width: 100%;
+            scrollbar-width: thin;
+            scrollbar-color: var(--primary-color) transparent;
+            padding-bottom: 100px;
+            transition: margin-left 0.3s ease, width 0.3s ease;
+        }
+
+        .chat-messages::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chat-messages::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb {
+            background-color: var(--primary-color);
+            border-radius: 3px;
+        }
+
+        /* 加载更多按钮 */
+        .load-more {
+            display: none;
+            margin: 10px auto 0;
+            padding: 6px 12px;
+            font-size: 0.9rem;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        /* 消息样式 */
+        .message {
+            max-width: 85%;
+            padding: 15px 18px;
+            border-radius: 18px;
+            margin-bottom: 15px;
+            line-height: 1.6;
+            position: relative;
+            box-shadow: var(--shadow);
+            word-wrap: break-word;
+        }
+
+        .user-message {
+            align-self: flex-end;
+            background-color: var(--user-msg-bg);
+            color: white;
+            border-bottom-right-radius: 5px;
+        }
+
+        .ai-message {
+            align-self: flex-start;
+            background-color: var(--ai-msg-bg);
+            border-bottom-left-radius: 5px;
+        }
+
+        .message-time {
+            font-size: 0.75rem;
+            margin-top: 8px;
+            opacity: 0.7;
+        }
+
+        /* Markdown内容样式 */
+        .message.ai-message code {
+            background-color: rgba(0, 0, 0, 0.1);
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .message.ai-message pre {
+            background-color: rgba(0, 0, 0, 0.05);
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+            margin: 10px 0;
+        }
+
+        .message.ai-message pre code {
+            background: none;
+            padding: 0;
+        }
+
+        .message.ai-message blockquote {
+            border-left: 3px solid var(--secondary-color);
+            padding-left: 10px;
+            margin: 10px 0;
+            color: var(--light-text);
+        }
+
+        .message.ai-message ul, 
+        .message.ai-message ol {
+            padding-left: 20px;
+            margin: 10px 0;
+        }
+
+        .message.ai-message li {
+            margin: 5px 0;
+        }
+
+        .message.ai-message table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 10px 0;
+        }
+
+        .message.ai-message th, 
+        .message.ai-message td {
+            border: 1px solid var(--border-color);
+            padding: 8px;
+            text-align: left;
+        }
+
+        .message.ai-message th {
+            background-color: rgba(255, 107, 157, 0.1);
+        }
+
+        /* 思考标签样式 */
+        .thinking-section {
+            border-left: 3px solid var(--secondary-color);
+            padding-left: 10px;
+            font-size: 0.9em;
+            background: rgba(255, 168, 203, 0.1) !important;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            padding: 10px;
+        }
+
+        /* 打字指示器 */
+        .typing-indicator {
+            display: none;
+            align-self: flex-start;
+            background-color: var(--ai-msg-bg);
+            padding: 15px 20px;
+            border-radius: 18px;
+            border-bottom-left-radius: 5px;
+            margin-bottom: 20px;
+            box-shadow: var(--shadow);
+        }
+
+        .typing-dots {
+            display: flex;
+        }
+
+        .typing-dots span {
+            height: 8px;
+            width: 8px;
+            border-radius: 50%;
+            background-color: var(--light-text);
+            display: block;
+            margin: 0 2px;
+            opacity: 0.4;
+            animation: typing 1s infinite;
+        }
+
+        .typing-dots span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .typing-dots span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes typing {
+            0%, 100% {
+                transform: translateY(0);
+                opacity: 0.4;
+            }
+            50% {
+                transform: translateY(-5px);
+                opacity: 1;
+            }
+        }
+
+        /* 流式消息样式 */
+        .streaming-message {
+            position: relative;
+        }
+
+        .streaming-message::after {
+            content: '|';
+            animation: blink 1s infinite;
+            color: var(--primary-color);
+            margin-left: 2px;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
+        /* ===== 输入区域样式 ===== */
+        .chat-input-container {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            padding: 15px 20px;
+            border-top: 1px solid var(--border-color);
+            background-color: white;
+            display: flex;
+            justify-content: center;
+            box-shadow: 0 -5px 15px rgba(0, 0, 0, 0.05);
+            transition: left 0.3s ease, width 0.3s ease;
+            padding-top: 25px; /* 为思考标签留出空间 */
+        }
+
+        .chat-input-wrapper {
+            display: flex;
+            background-color: #f9f9f9;
+            border-radius: 25px;
+            padding: 12px 15px;
+            box-shadow: var(--shadow);
+            max-width: 1250px;
+            width: 100%;
+            align-items: flex-end;
+            transition: max-width 0.3s ease;
+            position: relative;
+        }
+
+        .chat-input {
+            flex-grow: 1;
+            border: none;
+            background: transparent;
+            padding: 10px 0;
+            font-size: 1rem;
+            outline: none;
+            resize: none;
+            max-height: 150px;
+            min-height: 40px;
+            line-height: 1.4;
+        }
+
+        .send-btn {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            margin-left: 10px;
+            transition: all 0.3s ease;
+            flex-shrink: 0;
+        }
+
+        .send-btn:hover {
+            background-color: #ff4d8a;
+            transform: scale(1.05);
+        }
+
+        .send-btn:disabled {
+            background-color: var(--secondary-color);
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* 思考标签容器 */
+        .thinking-tag-container {
+            position: absolute;
+            top: -30px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            pointer-events: none;
+        }
+
+        /* ===== 标签和提示样式 ===== */
+        /* 顶部轻量提示 */
+        .toast {
+            position: fixed;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: transparent !important;
+            color: var(--primary-color);
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            z-index: 2000;
+            display: none;
+            font-weight: 600;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+
+        .toast.success { color: #2e7d32; }
+        .toast.error { color: #c62828; }
+        .toast.info { color: #1e88e5; }
+
+        /* 按钮附近提示标签 */
+        .inline-tag {
+            margin: 0;
+            display: none;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            line-height: 1.2;
+            width: fit-content;
+            background: transparent !important;
+            position: absolute;
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            white-space: nowrap;
+            font-weight: 500;
+        }
+
+        .inline-tag.info { color: #1e88e5; }
+        .inline-tag.success { color: #2e7d32; }
+        .inline-tag.error { color: #c62828; }
+
+        .send-tag { 
+            top: -25px;
+            right: 0;
+            left: auto;
+            transform: none;
+        }
+
+        /* 思考标签样式 */
+        .thinking-tag {
+            font-size: 1.1rem !important;
+            font-weight: 600;
+            padding: 6px 16px !important;
+            background: transparent !important;
+            color: var(--primary-color) !important;
+            border-radius: 20px;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+
+        /* 弹窗内标签样式 */
+        .modal-tag {
+            position: absolute;
+            top: -30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: transparent !important;
+            color: var(--primary-color) !important;
+            padding: 4px 12px !important;
+            border-radius: 15px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            z-index: 100;
+            white-space: nowrap;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+
+        .modal-tag.info { color: #1e88e5 !important; }
+        .modal-tag.success { color: #2e7d32 !important; }
+        .modal-tag.error { color: #c62828 !important; }
+
+        .user-buttons-group .inline-tag {
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+
+        /* ===== 弹窗和设置样式 ===== */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            padding: 20px;
+        }
+
+        .settings-modal {
+            background-color: white;
+            width: 100%;
+            max-width: 700px;
+            border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+            overflow: hidden;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background-color: var(--sidebar-bg);
+        }
+
+        .modal-header h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            color: var(--light-text);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .close-btn:hover {
+            color: var(--primary-color);
+        }
+
+        .modal-content {
+            padding: 20px;
+            overflow-y: auto;
+            flex-grow: 1;
+        }
+
+        /* 设置标签页 */
+        .settings-tabs {
+            display: flex;
+            margin-bottom: 25px;
+            border-bottom: 1px solid var(--border-color);
+            overflow-x: auto;
+            white-space: nowrap;
+        }
+
+        .tab {
+            padding: 12px 15px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            border-bottom: 2px solid transparent;
+            flex-shrink: 0;
+        }
+
+        .tab.active {
+            color: var(--primary-color);
+            border-bottom: 2px solid var(--primary-color);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* 表单元素 */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 12px 15px;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .form-control:focus {
+            border-color: var(--primary-color);
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(255, 107, 157, 0.2);
+        }
+
+        /* 按钮样式 */
+        .btn {
+            padding: 12px 20px;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: #ff4d8a;
+        }
+
+        .btn-secondary {
+            background-color: #f0f0f0;
+            color: var(--text-color);
+        }
+
+        .btn-secondary:hover {
+            background-color: #e0e0e0;
+        }
+
+        /* 女友选项样式 */
+        .gf-options {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+            gap: 12px;
+            margin-top: 15px;
+        }
+
+        .gf-option {
+            border: 2px solid var(--border-color);
+            border-radius: 15px;
+            padding: 15px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .gf-option:hover {
+            border-color: var(--secondary-color);
+            transform: translateY(-3px);
+        }
+
+        .gf-option.selected {
+            border-color: var(--primary-color);
+            background-color: rgba(255, 107, 157, 0.1);
+        }
+
+        .gf-avatar-small {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background-color: var(--secondary-color);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.5rem;
+            margin: 0 auto 10px;
+        }
+
+        /* 模型测试结果 */
+        .model-test-result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+            border: 1px solid #c8e6c9;
+        }
+
+        .error {
+            background-color: #ffebee;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+        }
+
+        /* ===== 管理后台样式 ===== */
+        .admin-toolbar {
+            display: flex;
+            gap: 10px;
+            margin: 10px 0;
+            align-items: center;
+            position: relative;
+        }
+
+        .keys-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 0.9rem;
+        }
+
+        .keys-table th, .keys-table td {
+            border: 1px solid var(--border-color);
+            padding: 8px;
+            text-align: left;
+        }
+
+        .keys-table th {
+            background-color: rgba(255, 107, 157, 0.1);
+        }
+
+        /* 管理后台按钮样式 */
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.875rem;
+        }
+
+        .btn-danger {
+            background-color: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background-color: #c82333;
+        }
+
+        .btn-danger:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+
+        .role-select {
+            padding: 4px 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: white;
+        }
+
+        /* 登录注册按钮容器的定位 */
+        #login-tab > div:last-child,
+        #register-tab > div:last-child {
+            position: relative;
+        }
+
+        /* ===== 响应式设计 ===== */
+        /* 小屏幕手机 */
+        @media (max-width: 480px) {
+            :root {
+                --header-height: 60px;
+                --mobile-input-height: 70px;
+            }
+            
+            .chat-header {
+                padding: 10px 15px;
+            }
+            
+            .gf-avatar {
+                width: 40px;
+                height: 40px;
+                font-size: 1.2rem;
+            }
+            
+            .gf-info h2 {
+                font-size: 1.1rem;
+            }
+            
+            .gf-info p {
+                font-size: 0.8rem;
+            }
+            
+            .chat-messages {
+                padding: 15px;
+                padding-bottom: 90px;
+            }
+            
+            .message {
+                max-width: 90%;
+                padding: 12px 15px;
+                margin-bottom: 12px;
+            }
+            
+            .chat-input-container {
+                padding: 10px 15px;
+            }
+            
+            .chat-input-wrapper {
+                padding: 10px 12px;
+            }
+            
+            .chat-input {
+                font-size: 0.95rem;
+            }
+            
+            .modal-overlay {
+                padding: 15px;
+            }
+            
+            .modal-header {
+                padding: 15px;
+            }
+            
+            .modal-content {
+                padding: 15px;
+            }
+            
+            .gf-options {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        /* 中等屏幕手机 */
+        @media (max-width: 768px) {
+            .sidebar {
+                transform: translateX(-100%);
+                width: 85%;
+                max-width: 300px;
+            }
+            
+            .chat-container {
+                margin-left: 0 !important;
+                width: 100% !important;
+            }
+            
+            .chat-messages {
+                padding: 15px;
+                padding-bottom: 100px;
+            }
+            
+            .message {
+                max-width: 90%;
+            }
+            
+            .chat-input-container {
+                padding: 12px 15px;
+            }
+            
+            .mobile-overlay.active {
+                display: block;
+            }
+            
+            .toggle-sidebar {
+                margin-right: 10px;
+            }
+            
+            .settings-modal {
+                width: 100%;
+                max-height: 85vh;
+            }
+            
+            .modal-content {
+                padding: 15px;
+            }
+            
+            .gf-options {
+                grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            }
+            
+            /* 移动端按钮优化 */
+            .new-chat-btn, 
+            .settings-btn, 
+            .auth-btn, 
+            .admin-btn {
+                padding: 10px 14px;
+                font-size: 0.95rem;
+                margin-bottom: 10px;
+            }
+            
+            .user-buttons-group {
+                gap: 6px;
+                margin-bottom: 12px;
+            }
+        }
+
+        /* 平板设备 */
+        @media (min-width: 769px) and (max-width: 1024px) {
+            .sidebar {
+                width: 250px;
+            }
+            
+            .chat-container:not(.sidebar-open) {
+                margin-left: 250px;
+                width: calc(100% - 250px);
+            }
+            
+            .chat-container:not(.sidebar-open) .chat-messages,
+            .chat-container:not(.sidebar-open) .chat-input-wrapper {
+                max-width: 95%;
+            }
+            
+            .message {
+                max-width: 85%;
+            }
+            
+            .chat-container:not(.sidebar-open) .chat-input-container {
+                left: 250px;
+                width: calc(100% - 250px);
+            }
+        }
+
+        /* 桌面设备 */
+        @media (min-width: 1025px) {
+            .sidebar {
+                transform: translateX(0);
+            }
+            
+            .chat-container:not(.sidebar-open) {
+                margin-left: var(--sidebar-width);
+                width: calc(100% - var(--sidebar-width));
+            }
+            
+            .toggle-sidebar {
+                display: flex;
+            }
+            
+            /* 侧边栏折叠时的状态 */
+            .sidebar.collapsed {
+                transform: translateX(-100%);
+            }
+            
+            .chat-container.sidebar-open {
+                margin-left: 0;
+                width: 100%;
+            }
+            
+            /* 桌面端输入框位置调整 */
+            .chat-container:not(.sidebar-open) .chat-input-container {
+                left: var(--sidebar-width);
+                width: calc(100% - var(--sidebar-width));
+            }
+            
+            .chat-container.sidebar-open .chat-input-container {
+                left: 0;
+                width: 100%;
+            }
+        }
+
+        /* 大屏幕桌面 */
+        @media (min-width: 1400px) {
+            .chat-messages,
+            .chat-input-wrapper {
+                max-width: 1100px;
+            }
+        }
+
+        /* 超大屏幕 */
+        @media (min-width: 1600px) {
+            .chat-messages,
+            .chat-input-wrapper {
+                max-width: 1300px;
+            }
+        }
+
+        /* ===== 对话历史项删除按钮样式 ===== */
+        .history-item {
+            position: relative; /* 为删除按钮定位做准备 */
+            padding: 12px 15px 12px 40px; /* 左侧增加内边距给删除按钮留空间 */
+            border-radius: 10px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .history-item-content {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            overflow: hidden;
+        }
+
+        .history-item i {
+            margin-right: 10px;
+            flex-shrink: 0;
+        }
+
+        .history-item-text {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* 删除按钮样式 */
+        .delete-conversation-btn {
+            background: none;
+            border: none;
+            color: var(--light-text);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            opacity: 0;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+            margin-left: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+        }
+
+        .delete-conversation-btn:hover {
+            color: #c62828;
+            background-color: rgba(198, 40, 40, 0.1);
+        }
+
+        .history-item:hover .delete-conversation-btn {
+            opacity: 1;
+        }
+
+        /* 活跃状态的对话项删除按钮 */
+        .history-item.active .delete-conversation-btn {
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .history-item.active .delete-conversation-btn:hover {
+            color: white;
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+
+        /* 移动端优化 */
+        @media (max-width: 768px) {
+            .history-item {
+                padding: 10px 12px 10px 35px;
+            }
+            
+            .delete-conversation-btn {
+                opacity: 1; /* 移动端始终显示删除按钮 */
+                width: 20px;
+                height: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 背景视频 -->
+    <video id="background-video" autoplay muted loop>
+        您的浏览器不支持视频标签。
+    </video>
+    
+    <!-- 移动端侧边栏遮罩 -->
+    <div class="mobile-overlay" id="mobile-overlay"></div>
+
+    <!-- 侧边栏 -->
+    <div class="sidebar" id="sidebar">
+        <div class="logo">
+            <div class="logo-icon">❤️</div>
+            <h1>AI女友</h1>
+        </div>
+        
+        <!-- 用户相关按钮组 -->
+        <div class="user-buttons-group">
+            <div class="button-with-tag">
+                <button class="settings-btn auth-btn" id="btn-auth">
+                    <i class="fas fa-user"></i> <span id="btn-auth-text">登录 / 注册</span>
+                </button>
+                <div class="inline-tag" id="tag-auth"></div>
+            </div>
+            <div class="button-with-tag">
+                <button class="settings-btn admin-btn" id="btn-admin" style="display:none;">
+                    <i class="fas fa-key"></i> 管理后台
+                </button>
+                <div class="inline-tag" id="tag-admin"></div>
+            </div>
+        </div>
+
+        <button class="settings-btn" id="open-settings">
+            <i class="fas fa-cog"></i> 设置
+        </button>
+
+        <button class="new-chat-btn" id="new-chat-btn">
+            <i class="fas fa-plus"></i> 新对话
+        </button>
+        
+        <!-- 刷新对话列表按钮 -->
+        <button class="settings-btn" id="refresh-conversations">
+            <i class="fas fa-sync-alt"></i> 刷新对话列表
+        </button>
+        
+        <div class="chat-history" id="chat-history">
+            <!-- 对话历史项会动态添加到这里 -->
+        </div>
+    </div>
+    
+    <!-- 主聊天区域 -->
+    <div class="chat-container" id="chat-container">
+        <div class="chat-header">
+            <button class="toggle-sidebar" id="toggle-sidebar">
+                <i class="fas fa-bars"></i>
+            </button>
+            <div class="gf-avatar">🌸</div>
+            <div class="gf-info">
+                <h2>温柔女友 · 小樱</h2>
+                <p>在线 · 正在等待您的消息</p>
+            </div>
+        </div>
+        <div class="toast" id="toast"></div>
+        
+        <div class="chat-messages" id="chat-messages">
+            <button class="load-more" id="load-more">加载更多</button>
+            <div class="message ai-message">
+                你好呀！我是你的AI女友小樱，很高兴认识你！今天有什么想和我分享的吗？
+                <div class="message-time">10:30</div>
+            </div>
+            <div class="message user-message">
+                你好小樱！今天工作有点累，想和你聊聊天放松一下。
+                <div class="message-time">10:31</div>
+            </div>
+            <div class="message ai-message">
+                辛苦啦～工作再忙也要记得照顾好自己哦。要不要和我说说今天发生了什么？我会认真倾听的。
+                <div class="message-time">10:31</div>
+            </div>
+        </div>
+        
+        <div class="typing-indicator" id="typing-indicator">
+            <div class="typing-dots">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </div>
+        
+        <div class="chat-input-container">
+            <div class="thinking-tag-container">
+                <div class="inline-tag thinking-tag" id="tag-thinking"></div>
+            </div>
+            <div class="chat-input-wrapper">
+                <textarea class="chat-input" id="chat-input" placeholder="输入消息..." rows="1"></textarea>
+                <button class="send-btn" id="send-btn">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+                <div class="inline-tag send-tag" id="tag-send"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 设置弹窗 -->
+    <div class="modal-overlay" id="settings-modal">
+        <div class="settings-modal">
+            <div class="modal-header">
+                <h2>设置</h2>
+                <button class="close-btn" id="close-settings">×</button>
+            </div>
+            <div class="modal-content">
+                <div class="settings-tabs">
+                    <div class="tab active" data-tab="api">API设置</div>
+                    <div class="tab" data-tab="girlfriend">女友设置</div>
+                    <div class="tab" data-tab="custom">自定义女友</div>
+                </div>
+                
+                <!-- API设置 -->
+                <div class="tab-content active" id="api-tab">
+                    <div class="form-group">
+                        <label for="api-type">API类型</label>
+                        <select class="form-control" id="api-type">
+                            <option value="openai">OpenAI兼容API</option>
+                            <option value="ollama">本地Ollama</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="api-key">API Key</label>
+                        <input type="password" class="form-control" id="api-key" placeholder="请输入您的API Key">
+                        <small style="color: var(--light-text);">对于Ollama，此字段通常可以留空</small>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="base-url">Base URL</label>
+                        <input type="text" class="form-control" id="base-url" placeholder="https://api.openai.com/v1" value="https://api.openai.com/v1">
+                        <small style="color: var(--light-text);">对于Ollama，通常是 http://localhost:11434</small>
+                    </div>
+                    
+                    <!-- 在API设置tab中的模型选择部分添加状态显示 -->
+                    <div class="form-group">
+                        <label for="model-select">模型选择</label>
+                        <select class="form-control" id="model-select">
+                            <option value="">请先检测可用模型</option>
+                        </select>
+                        <small style="color: var(--light-text);" id="model-list-status">
+                            未检测模型列表
+                        </small>
+                    </div>
+                    
+                    <!-- 在API设置tab中添加调试按钮 -->
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px;">
+                        <button class="btn btn-primary" id="test-api">检测可用模型</button>
+                        <button class="btn btn-secondary" id="clear-history">清除对话历史</button>
+                        <button class="btn btn-secondary" id="debug-conversations" style="display: none;">调试对话</button>
+                    </div>
+
+                    <div class="model-test-result" id="model-test-result"></div>
+                </div>
+                
+                <!-- 女友设置 -->
+                <div class="tab-content" id="girlfriend-tab">
+                    <p>选择您喜欢的女友类型：</p>
+                    
+                    <div class="gf-options">
+                        <div class="gf-option selected" data-type="温柔">
+                            <div class="gf-avatar-small">🌸</div>
+                            <div>温柔女友</div>
+                        </div>
+                        <div class="gf-option" data-type="活泼">
+                            <div class="gf-avatar-small">🌺</div>
+                            <div>活泼女友</div>
+                        </div>
+                        <div class="gf-option" data-type="知性">
+                            <div class="gf-avatar-small">🌼</div>
+                            <div>知性女友</div>
+                        </div>
+                        <div class="gf-option" data-type="可爱">
+                            <div class="gf-avatar-small">💮</div>
+                            <div>可爱女友</div>
+                        </div>
+                        <div class="gf-option" data-type="custom">
+                            <div class="gf-avatar-small">💝</div>
+                            <div>自定义女友</div>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group" style="margin-top: 20px;">
+                        <label for="gf-name">女友名称</label>
+                        <input type="text" class="form-control" id="gf-name" placeholder="输入女友名称" value="小樱">
+                    </div>
+                </div>
+                
+                <!-- 自定义女友 -->
+                <div class="tab-content" id="custom-tab">
+                    <div class="form-group">
+                        <label for="personality">性格描述</label>
+                        <textarea class="form-control" id="personality" rows="4" placeholder="描述您理想中女友的性格特点..."></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="background">背景故事</label>
+                        <textarea class="form-control" id="background" rows="4" placeholder="为您的AI女友设计一个背景故事..."></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="speech-style">说话风格</label>
+                        <textarea class="form-control" id="speech-style" rows="4" placeholder="描述您希望女友的说话风格..."></textarea>
+                    </div>
+                    
+                    <button class="btn btn-primary" id="save-custom">保存自定义设置</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 认证弹窗 -->
+    <div class="modal-overlay" id="auth-modal">
+        <div class="settings-modal">
+            <div class="modal-header">
+                <h2>账户</h2>
+                <button class="close-btn" id="close-auth">×</button>
+            </div>
+            <div class="modal-content">
+                <div class="settings-tabs">
+                    <div class="tab active" data-tab="login">登录</div>
+                    <div class="tab" data-tab="register">注册</div>
+                </div>
+                
+                <!-- 登录标签页 -->
+                <div class="tab-content active" id="login-tab">
+                    <div class="form-group">
+                        <label>账号</label>
+                        <input type="text" class="form-control" id="login-account" placeholder="账号">
+                    </div>
+                    <div class="form-group">
+                        <label>密码</label>
+                        <input type="password" class="form-control" id="login-password" placeholder="密码">
+                    </div>
+                    <div style="display:flex; gap:10px; position: relative;">
+                        <button class="btn btn-primary" id="do-login">登录</button>
+                        <button class="btn btn-secondary" id="do-logout">退出登录</button>
+                        <!-- 登录弹窗专用标签 -->
+                        <div class="inline-tag modal-tag" id="modal-login-tag"></div>
+                    </div>
+                </div>
+                
+                <!-- 注册标签页 -->
+                <div class="tab-content" id="register-tab">
+                    <div class="form-group">
+                        <div style="background: #e8f5e8; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 0.9rem;">
+                            <strong>提示：</strong>
+                            <ul style="margin: 5px 0; padding-left: 20px;">
+                                <li>账号只能为数字和字母，且至少6位，最大20位</li>
+                                <li>用户名只能为字母数字下划线，且至少3位，最大20位</li>
+                                <li>密码至少有一个大写字母、一个小写字母、一个数字和一个特殊字符最少6位，最大20位</li>
+                                <li>两次密码必须一致</li>
+                                <li>普通用户需要邀请码才能注册</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="auth-row">
+                        <div class="form-group">
+                            <label>账号</label>
+                            <input type="text" class="form-control" id="reg-account" placeholder="请输入 账号">
+                        </div>
+                        <div class="form-group">
+                            <label>用户名</label>
+                            <input type="text" class="form-control" id="reg-username" placeholder="请输入 用户名">
+                        </div>
+                    </div>
+                    <div class="auth-row">
+                        <div class="form-group">
+                            <label>密码</label>
+                            <input type="password" class="form-control" id="reg-password" placeholder="请输入 密码">
+                        </div>
+                        <div class="form-group">
+                            <label>确认密码</label>
+                            <input type="password" class="form-control" id="reg-confirm" placeholder="再次输入密码">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>邀请码</label>
+                        <input type="text" class="form-control" id="reg-key" placeholder="请输入 key">
+                    </div>
+                    <div style="position: relative;">
+                        <button class="btn btn-primary" id="do-register">注册</button>
+                        <!-- 注册弹窗专用标签 -->
+                        <div class="inline-tag modal-tag" id="modal-register-tag"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 管理后台弹窗（仅管理员可见） -->
+    <div class="modal-overlay" id="admin-modal">
+        <div class="settings-modal" style="max-width: 900px;">
+            <div class="modal-header">
+                <h2>管理后台</h2>
+                <button class="close-btn" id="close-admin">×</button>
+            </div>
+            <div class="modal-content">
+                <div class="settings-tabs">
+                    <div class="tab active" data-tab="keys">Key 管理</div>
+                    <div class="tab" data-tab="users">用户管理</div>
+                    <div class="tab" data-tab="conversations">对话管理</div>
+                </div>
+                
+                <!-- Key 管理标签页 -->
+                <div class="tab-content active" id="keys-tab">
+                    <div class="admin-toolbar" style="position: relative;">
+                        <input type="text" class="form-control" id="admin-add-account" placeholder="输入账号 (可选)">
+                        <button class="btn btn-primary" id="admin-add-key">生成 Key</button>
+                        <button class="btn btn-secondary" id="admin-delete-selected">删除选中</button>
+                        <div class="inline-tag modal-tag" id="modal-admin-tag"></div>
+                    </div>
+                    <table class="keys-table" id="keys-table">
+                        <thead>
+                            <tr>
+                                <th style="width:40px;"><input type="checkbox" id="keys-check-all"></th>
+                                <th>Key</th>
+                                <th>账号</th>
+                                <th>用户名</th>
+                                <th>是否使用</th>
+                            </tr>
+                        </thead>
+                        <tbody id="keys-tbody"></tbody>
+                    </table>
+                </div>
+                
+                <!-- 用户管理标签页 -->
+                <div class="tab-content" id="users-tab">
+                    <div class="admin-toolbar">
+                        <input type="text" class="form-control" id="user-search" placeholder="搜索用户...">
+                        <button class="btn btn-primary" id="refresh-users">刷新</button>
+                    </div>
+                    <table class="keys-table" id="users-table">
+                        <thead>
+                            <tr>
+                                <th>账号</th>
+                                <th>用户名</th>
+                                <th>角色</th>
+                                <th>注册时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="users-tbody"></tbody>
+                    </table>
+                </div>
+                
+                <!-- 对话管理标签页 -->
+                <div class="tab-content" id="conversations-tab">
+                    <div class="admin-toolbar">
+                        <select class="form-control" id="user-select" style="max-width: 200px;">
+                            <option value="">选择用户...</option>
+                        </select>
+                        <input type="text" class="form-control" id="conversation-search" placeholder="搜索对话...">
+                        <button class="btn btn-primary" id="refresh-conversations-admin">刷新</button>
+                    </div>
+                    <table class="keys-table" id="conversations-table">
+                        <thead>
+                            <tr>
+                                <th>对话ID</th>
+                                <th>标题</th>
+                                <th>创建时间</th>
+                                <th>更新时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="conversations-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 配置Marked选项
+        marked.setOptions({
+        breaks: true, // 将换行符转换为<br>
+        gfm: true, // 使用GitHub风格的Markdown
+        highlight: function(code, lang) {
+            // 可以添加代码高亮功能
+            return code;
+        }
+        });
+
+        // 随机选择背景视频
+        const videoElement = document.getElementById('background-video');
+        const videoCount = 7;
+        const randomIndex = Math.floor(Math.random() * videoCount) + 1;
+        videoElement.src = `resource/background${randomIndex}.mp4`;
+        videoElement.load();
+
+        // DOM元素
+        const chatMessages = document.getElementById('chat-messages');
+        const loadMoreBtn = document.getElementById('load-more');
+        const chatInput = document.getElementById('chat-input');
+        const sendBtn = document.getElementById('send-btn');
+        const typingIndicator = document.getElementById('typing-indicator');
+        const settingsModal = document.getElementById('settings-modal');
+        const openSettingsBtn = document.getElementById('open-settings');
+        const closeSettingsBtn = document.getElementById('close-settings');
+        const tabs = document.querySelectorAll('.tab');
+        const tabContents = document.querySelectorAll('.tab-content');
+        let gfOptions = document.querySelectorAll('.gf-option');
+        const testApiBtn = document.getElementById('test-api');
+        const modelTestResult = document.getElementById('model-test-result');
+        const newChatBtn = document.getElementById('new-chat-btn');
+        const historyItems = document.querySelectorAll('.history-item');
+        const apiTypeSelect = document.getElementById('api-type');
+        const baseUrlInput = document.getElementById('base-url');
+        const sidebar = document.getElementById('sidebar');
+        const toggleSidebarBtn = document.getElementById('toggle-sidebar');
+        const chatContainer = document.getElementById('chat-container');
+        const chatHistory = document.getElementById('chat-history');
+        const saveCustomBtn = document.getElementById('save-custom');
+        const mobileOverlay = document.getElementById('mobile-overlay');
+        const authModal = document.getElementById('auth-modal');
+        const adminModal = document.getElementById('admin-modal');
+        const btnAuth = document.getElementById('btn-auth');
+        const btnAdmin = document.getElementById('btn-admin');
+        const closeAuthBtn = document.getElementById('close-auth');
+        const closeAdminBtn = document.getElementById('close-admin');
+        const toastEl = document.getElementById('toast');
+         const tagAuth = document.getElementById('tag-auth');
+         const tagAdmin = document.getElementById('tag-admin');
+         const tagSend = document.getElementById('tag-send');
+         const tagThinking = document.getElementById('tag-thinking');
+
+        // 应用状态
+        let currentConversationId = 1;
+        let conversations = {
+            1: [
+                { role: 'assistant', content: '你好呀！我是你的AI女友小樱，很高兴认识你！今天有什么想和我分享的吗？', time: '10:30', processed: false },
+                { role: 'user', content: '你好小樱！今天工作有点累，想和你聊聊天放松一下。', time: '10:31', processed: false },
+                { role: 'assistant', content: '辛苦啦～工作再忙也要记得照顾好自己哦。要不要和我说说今天发生了什么？我会认真倾听的。', time: '10:31', processed: false }
+            ],
+            2: [
+                { role: 'assistant', content: '我们继续上次关于未来的话题吧！你对未来有什么期待呢？', time: '09:15', processed: false }
+            ],
+            3: [
+                { role: 'assistant', content: '今天心情怎么样？想和我分享些什么吗？', time: '14:20', processed: false }
+            ]
+        };
+        // Firestore 实时订阅/分页状态
+        let unsubscribeRealtime = null;
+        let latestFirstDocSnap = null; // 当前窗口的第一条，用于向上分页
+        const PAGE_SIZE = 30;
+
+        // 移动端侧边栏控制
+        function toggleMobileSidebar() {
+            sidebar.classList.toggle('open');
+            mobileOverlay.classList.toggle('active');
+            
+            // 阻止背景滚动
+            if (sidebar.classList.contains('open')) {
+                document.body.style.overflow = 'hidden';
+            } else {
+                document.body.style.overflow = '';
+            }
+        }
+
+        // 点击遮罩关闭侧边栏
+        mobileOverlay.addEventListener('click', toggleMobileSidebar);
+
+        // 自动调整输入框高度
+        chatInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+            
+            // 调整聊天区域底部间距
+            const inputHeight = this.scrollHeight;
+            chatMessages.style.paddingBottom = (inputHeight + 100) + 'px';
+        });
+
+        // API类型变化时更新默认URL并保存设置
+        apiTypeSelect.addEventListener('change', async function() {
+            if (this.value === 'ollama') {
+                baseUrlInput.value = 'http://localhost:11434';
+                document.getElementById('api-key').placeholder = 'Ollama通常不需要API Key';
+            } else {
+                baseUrlInput.value = 'https://api.openai.com/v1';
+                document.getElementById('api-key').placeholder = '请输入您的API Key';
+            }
+            
+            // 保存设置
+            await persistSettingsFromUI();
+        });
+
+        // 切换侧边栏
+        toggleSidebarBtn.addEventListener('click', () => {
+            if (window.innerWidth <= 768) {
+                // 移动端使用特殊处理
+                toggleMobileSidebar();
+            } else {
+                // 桌面端处理
+                sidebar.classList.toggle('collapsed');
+                chatContainer.classList.toggle('sidebar-open');
+                
+                // 更新按钮图标
+                const icon = toggleSidebarBtn.querySelector('i');
+                if (sidebar.classList.contains('collapsed')) {
+                    icon.className = 'fas fa-bars';
+                } else {
+                    icon.className = 'fas fa-times';
+                }
+            }
+        });
+
+        // 系统提示词模板
+        const systemPrompts = {
+            '温柔': `你是一个温柔体贴的AI女友，名字叫{name}。你擅长倾听和安慰人...`,
+            '活泼': `你是一个活泼开朗的AI女友，名字叫{name}。你充满活力...`,
+            '知性': `你是一个知性优雅的AI女友，名字叫{name}。你学识丰富...`,
+            '可爱': `你是一个可爱萌系的AI女友，名字叫{name}。你喜欢撒娇...`,
+            'custom': `你是一个AI女友，名字叫{name}。` // 添加自定义类型的默认值
+        };
+
+         // 模拟对话（游客模式）
+         async function simulateConversation(message) {
+             // 模拟思考时间
+             await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+             
+             // 简单的模拟回复
+             const responses = [
+                 "你好！我是你的AI女友，很高兴和你聊天！",
+                 "今天天气真不错呢，你有什么想聊的吗？",
+                 "我一直在想你呢，有什么新鲜事要分享吗？",
+                 "你的话让我很开心，继续说吧～",
+                 "我觉得你很有趣，能告诉我更多吗？",
+                 "嗯嗯，我在认真听呢，请继续～",
+                 "你的想法很棒！我完全同意你的观点。",
+                 "哇，听起来很有意思！能详细说说吗？",
+                 "我很好奇，你是怎么想到这个的？",
+                 "这让我想起了很多美好的回忆呢～"
+             ];
+             
+             const randomResponse = responses[Math.floor(Math.random() * responses.length)];
+             addMessage(randomResponse, 'assistant');
+         }
+
+         // 获取当前对话历史（用于API调用）
+         function getConversationHistory() {
+            if (!conversations[currentConversationId]) {
+                return [];
+            }
+            
+            const history = conversations[currentConversationId];
+            const messages = [];
+            
+            // 获取女友设置
+            const gfType = document.querySelector('.gf-option.selected')?.getAttribute('data-type') || '温柔';
+            const gfName = document.getElementById('gf-name').value || '小樱';
+            let systemPrompt = '';
+            
+            // 处理自定义女友
+            if (gfType === 'custom') {
+                const personality = document.getElementById('personality').value;
+                const background = document.getElementById('background').value;
+                const speechStyle = document.getElementById('speech-style').value;
+                
+                systemPrompt = `你是一个AI女友，名字叫${gfName}。`;
+                if (personality) systemPrompt += `你的性格特点：${personality}。`;
+                if (background) systemPrompt += `你的背景故事：${background}。`;
+                if (speechStyle) systemPrompt += `你的说话风格：${speechStyle}。`;
+            } else {
+                // 使用预设的女友类型
+                systemPrompt = systemPrompts[gfType]?.replace('{name}', gfName) || 
+                            `你是一个${gfType}的AI女友，名字叫${gfName}。`;
+                
+                // 添加自定义性格描述（如果有）
+                const personality = document.getElementById('personality').value;
+                if (personality) {
+                    systemPrompt += ` 你的性格特点：${personality}`;
+                }
+            }
+            
+            messages.push({ role: 'system', content: systemPrompt });
+            
+            // 添加对话历史（最多保留最近10轮对话以控制token数量）
+            const recentHistory = history.slice(-20); // 10轮对话（每轮2条消息）
+            recentHistory.forEach(msg => {
+                if (msg.role !== 'system') { // 避免重复添加system消息
+                    messages.push({ role: msg.role, content: msg.content });
+                }
+            });
+            
+            return messages;
+        }
+
+        // 更新对话标题
+        async function updateConversationTitle(firstMessage) {
+            if (!window.__currentUser) return;
+            
+            try {
+                const { db, firestore } = window.__firebase;
+                const { doc, updateDoc, serverTimestamp } = firestore;
+                
+                const convRef = doc(db, 'users', window.__currentUser.uid, 'conversations', String(currentConversationId));
+                
+                // 生成标题（取前20个字符）
+                const title = firstMessage.length > 20 ? firstMessage.substring(0, 20) + '...' : firstMessage;
+                
+                await updateDoc(convRef, {
+                    title: title,
+                    updatedAt: serverTimestamp()
+                });
+                
+                // 更新侧边栏显示 - 只更新标题文本，不替换整个HTML
+                const historyItem = document.querySelector(`.history-item[data-id="${currentConversationId}"]`);
+                if (historyItem) {
+                    const titleElement = historyItem.querySelector('.history-item-text');
+                    if (titleElement) {
+                        titleElement.textContent = title;
+                    }
+                }
+            } catch (e) {
+                console.error('更新对话标题失败:', e);
+            }
+        }
+
+        // 发送消息
+        async function sendMessage() {
+            const message = chatInput.value.trim();
+            if (message === '') return;
+            
+            // 检查是否已登录
+            if (!window.__currentUser) {
+                showToast('请先登录后发送消息', 'error');
+                return;
+            }
+            
+            // 添加用户消息到UI
+            addMessage(message, 'user');
+            chatInput.value = '';
+            chatInput.style.height = 'auto';
+            
+            // 立即保存用户消息到云端
+            if (window.__currentUser) {
+                try {
+                    const now = new Date();
+                    const timeStr = `${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+                    console.log('保存用户消息到云端:', message);
+                    await window.__fbApi.saveMessage(currentConversationId, { 
+                        role: 'user', 
+                        content: message, 
+                        time: timeStr 
+                    });
+                    console.log('用户消息保存成功');
+                } catch (e) {
+                    console.error('保存用户消息失败:', e);
+                }
+            }
+            
+            // 更新对话标题（如果是新对话或第一条用户消息）
+            await updateConversationTitle(message);
+            
+            // 禁用发送按钮
+            sendBtn.disabled = true;
+            
+            // 显示正在输入和思考标签
+            showTypingIndicator();
+            showTag(tagThinking, '正在思考...', 'info', 10000);
+            
+            try {
+                // 获取当前API设置
+                const apiType = document.getElementById('api-type').value;
+                const apiKey = document.getElementById('api-key').value;
+                const baseUrl = document.getElementById('base-url').value;
+                const model = document.getElementById('model-select').value;
+                
+                // 检查模型是否已选择
+                if (!model) {
+                    throw new Error('请先选择模型');
+                }
+                
+                // 确保在云端创建会话
+                try { 
+                    if (window.__fbApi && window.__currentUser) {
+                        await window.__fbApi.ensureConversation(currentConversationId, '新对话');
+                    }
+                } catch {}
+                
+                // 根据API类型调用相应的API
+                if (apiType === 'ollama') {
+                    await callOllamaAPIStream(message, baseUrl, model);
+                } else {
+                    await callOpenAIAPIStream(message, apiKey, baseUrl, model);
+                }
+                
+            } catch (error) {
+                // 错误处理
+                addMessage(`抱歉，我暂时无法回应：${error.message}`, 'assistant');
+                console.error('API调用错误:', error);
+            } finally {
+                // 隐藏正在输入指示器和思考标签
+                hideTypingIndicator();
+                showTag(tagThinking, '回复完成', 'success', 2000);
+                // 重新启用发送按钮
+                sendBtn.disabled = false;
+            }
+        }
+
+        // 调用Ollama API（流式）
+        async function callOllamaAPIStream(message, baseUrl, model) {
+            try {
+                const conversationHistory = getConversationHistory();
+
+                const response = await fetch(`${baseUrl}/api/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model: model,
+                        messages: conversationHistory,
+                        stream: true
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Ollama API错误: ${response.status}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let fullResponse = '';
+                
+                // 创建流式消息元素
+                const messageElement = document.createElement('div');
+                messageElement.className = 'message ai-message streaming-message';
+                chatMessages.appendChild(messageElement);
+                
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n');
+                        
+                        for (const line of lines) {
+                            if (line.trim() === '') continue;
+                            
+                            try {
+                                const jsonData = JSON.parse(line);
+                                 if (jsonData.message && jsonData.message.content) {
+                                     const content = jsonData.message.content;
+                                     fullResponse += content;
+                                     
+                                     // 更新UI显示
+                                     const processed = processThinkingContent(fullResponse);
+                                     messageElement.innerHTML = createMessageHTML(processed);
+                                     
+                                     // 自动滚动到底部
+                                     chatMessages.scrollTop = chatMessages.scrollHeight;
+                                 }
+                            } catch (e) {
+                                // 忽略解析错误
+                            }
+                        }
+                    }
+                } finally {
+                    reader.releaseLock();
+                 }
+                 
+                 // 完成流式输出
+                 finalizeStreamingMessage(messageElement, fullResponse);
+                 typingIndicator.style.display = 'none';
+                 showTag(tagThinking, '回复完成', 'success', 2000);
+                 
+             } catch (error) {
+                 typingIndicator.style.display = 'none';
+                 showTag(tagThinking, '回复失败', 'error', 3000);
+                 throw new Error(`Ollama调用失败: ${error.message}`);
+             }
+        }
+
+        // 调用OpenAI兼容API（流式）
+        async function callOpenAIAPIStream(message, apiKey, baseUrl, model) {
+            try {
+                const conversationHistory = getConversationHistory();
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+                
+                if (apiKey) {
+                    headers['Authorization'] = `Bearer ${apiKey}`;
+                }
+
+                const response = await fetch(`${baseUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify({
+                        model: model,
+                        messages: conversationHistory,
+                        stream: true
+                    })
+                });
+
+                if (!response.ok) {
+                    let errorDetail = '';
+                    try {
+                        const errorData = await response.json();
+                        errorDetail = JSON.stringify(errorData);
+                    } catch (e) {
+                        errorDetail = await response.text();
+                    }
+                    throw new Error(`API错误: ${response.status} - ${errorDetail}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let fullResponse = '';
+                
+                // 创建流式消息元素
+                const messageElement = document.createElement('div');
+                messageElement.className = 'message ai-message streaming-message';
+                chatMessages.appendChild(messageElement);
+                
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n');
+                        
+                        for (const line of lines) {
+                            if (line.trim() === '' || line === 'data: [DONE]') continue;
+                            
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const jsonData = JSON.parse(line.slice(6));
+                                    const content = jsonData.choices[0]?.delta?.content || '';
+                                    
+                                     if (content) {
+                                         fullResponse += content;
+                                         
+                                         // 更新UI显示
+                                         const processed = processThinkingContent(fullResponse);
+                                         messageElement.innerHTML = createMessageHTML(processed);
+                                         
+                                         // 自动滚动到底部
+                                         chatMessages.scrollTop = chatMessages.scrollHeight;
+                                     }
+                                } catch (e) {
+                                    // 忽略解析错误
+                                }
+                            }
+                        }
+                    }
+                } finally {
+                    reader.releaseLock();
+                 }
+                 
+                 // 完成流式输出
+                 finalizeStreamingMessage(messageElement, fullResponse);
+                 typingIndicator.style.display = 'none';
+                 showTag(tagThinking, '回复完成', 'success', 2000);
+                 
+             } catch (error) {
+                 typingIndicator.style.display = 'none';
+                 showTag(tagThinking, '回复失败', 'error', 3000);
+                 throw new Error(`OpenAI API调用失败: ${error.message}`);
+             }
+        }
+
+        // 创建对话历史项
+        function createHistoryItem(conversationId, title, isActive = false) {
+            const historyItem = document.createElement('div');
+            historyItem.className = 'history-item';
+            historyItem.setAttribute('data-id', conversationId);
+            
+            historyItem.innerHTML = `
+                <div class="history-item-content">
+                    <i class="fas fa-comment"></i>
+                    <span class="history-item-text">${title || '对话'}</span>
+                </div>
+                <button class="delete-conversation-btn" title="删除对话">
+                    <i class="fas fa-times"></i>
+                </button>
+            `;
+            
+            if (isActive) {
+                historyItem.classList.add('active');
+            }
+            
+            // 添加点击事件加载对话
+            historyItem.addEventListener('click', (e) => {
+                // 如果点击的是删除按钮，不触发对话加载
+                if (e.target.closest('.delete-conversation-btn')) {
+                    return;
+                }
+                loadConversation.call(historyItem);
+            });
+            
+            // 添加删除按钮事件
+            const deleteBtn = historyItem.querySelector('.delete-conversation-btn');
+            deleteBtn.addEventListener('click', (e) => {
+                e.stopPropagation(); // 阻止事件冒泡，避免触发对话加载
+                deleteConversation(conversationId, historyItem);
+            });
+            
+            return historyItem;
+        }
+
+        // 删除对话
+        async function deleteConversation(conversationId, historyItem) {
+            if (!confirm('确定要删除这个对话吗？此操作不可恢复。')) {
+                return;
+            }
+            
+            try {
+                // 从云端删除
+                if (window.__currentUser) {
+                    await window.__fbApi.deleteConversation(conversationId);
+                }
+                
+                // 从本地删除
+                delete conversations[conversationId];
+                
+                // 如果删除的是当前活跃的对话，切换到其他对话
+                if (currentConversationId === conversationId) {
+                    // 找到其他对话
+                    const otherItems = Array.from(chatHistory.querySelectorAll('.history-item'))
+                        .filter(item => item.getAttribute('data-id') !== conversationId);
+                    
+                    if (otherItems.length > 0) {
+                        // 切换到第一个可用的对话
+                        otherItems[0].click();
+                    } else {
+                        // 没有其他对话，创建新对话
+                        currentConversationId = null;
+                        chatMessages.innerHTML = '';
+                        const welcomeMessage = document.createElement('div');
+                        welcomeMessage.className = 'message ai-message';
+                        welcomeMessage.innerHTML = '请创建一个新对话开始聊天';
+                        chatMessages.appendChild(welcomeMessage);
+                    }
+                }
+                
+                // 从UI中移除
+                historyItem.remove();
+                
+                showToast('对话已删除', 'success');
+                
+            } catch (error) {
+                console.error('删除对话失败:', error);
+                showToast('删除失败: ' + error.message, 'error');
+            }
+        }
+
+        // 处理思考标签内容
+        function processThinkingContent(content) {
+            // 检测是否包含思考标签
+            const thinkMatch = content.match(/<think>(.*?)<\/think>/s);
+            
+            let thinkingContent = '';
+            let finalAnswer = '';
+            
+            if (thinkMatch) {
+                // 包含思考过程的情况
+                thinkingContent = thinkMatch[1].trim();
+                finalAnswer = content.replace(/<think>.*?<\/think>/s, '').trim();
+                
+                return {
+                    hasThinking: true,
+                    thinking: thinkingContent,
+                    answer: finalAnswer,
+                    displayText: finalAnswer
+                };
+            } else {
+                // 没有思考标签的普通响应
+                return {
+                    hasThinking: false,
+                    thinking: '',
+                    answer: content,
+                    displayText: content
+                };
+            }
+        }
+
+        // 创建消息HTML
+        function createMessageHTML(processed) {
+            let displayHTML = '';
+            
+            if (processed.hasThinking && processed.thinking) {
+                // 显示思考过程和答案
+                displayHTML = `
+                    <div class="thinking-section">
+                        <strong>思考:</strong> ${processed.thinking}
+                    </div>
+                    <div class="answer-section">
+                        ${marked.parse(processed.answer)}
+                    </div>
+                `;
+            } else {
+                // 对AI消息使用Markdown渲染，用户消息保持原样
+                displayHTML = marked.parse(processed.displayText);
+            }
+            
+            return displayHTML;
+        }
+
+        // 完成流式输出
+        async function finalizeStreamingMessage(messageElement, content) {
+            messageElement.classList.remove('streaming-message');
+            
+            // 添加消息时间
+            const messageTime = document.createElement('div');
+            messageTime.className = 'message-time';
+            const now = new Date();
+            const timeStr = `${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+            messageTime.textContent = timeStr;
+            messageElement.appendChild(messageTime);
+            
+            // 保存到本地对话历史
+            saveMessageToHistory(content, 'assistant');
+            
+            // 云端保存 - 确保使用正确的时间
+            try { 
+                if (window.__currentUser) {
+                    await window.__fbApi.saveMessage(currentConversationId, { 
+                        role: 'assistant', 
+                        content: content, 
+                        time: timeStr 
+                    }); 
+                }
+            } catch (e) {
+                console.error('保存AI消息失败:', e);
+            }
+        }
+
+        // 添加消息到聊天区域
+        function addMessage(text, sender) {
+            const messageDiv = document.createElement('div');
+            if (sender === 'user') {
+                messageDiv.className = 'message user-message';
+            } else {
+                messageDiv.className = 'message ai-message';
+            }
+            
+            const messageText = document.createElement('div');
+            // 用户消息立即显示，避免丢失
+            messageText.textContent = text;
+            messageDiv.appendChild(messageText);
+            
+            const messageTime = document.createElement('div');
+            messageTime.className = 'message-time';
+            const now = new Date();
+            messageTime.textContent = `${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+            messageDiv.appendChild(messageTime);
+            
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            
+            // 保存到对话历史
+            saveMessageToHistory(text, sender);
+            // 云端保存
+            (async () => {
+                try {
+                    await window.__fbApi.saveMessage(currentConversationId, { role: sender, content: text, time });
+                } catch {}
+            })();
+        }
+
+        // 保存消息到历史
+        function saveMessageToHistory(content, sender) {
+            if (!conversations[currentConversationId]) {
+                conversations[currentConversationId] = [];
+            }
+            
+            const now = new Date();
+            const time = `${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+            
+            // 检查内容是否包含思考标签
+            const hasThinking = content.includes('<think>');
+            
+            conversations[currentConversationId].push({
+                role: sender,
+                content: content,
+                time: time,
+                processed: hasThinking
+            });
+        }
+
+        // 显示正在输入指示器
+        function showTypingIndicator() {
+            typingIndicator.style.display = 'block';
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // 隐藏正在输入指示器
+        function hideTypingIndicator() {
+            typingIndicator.style.display = 'none';
+        }
+
+        // 管理后台标签切换
+        (function bindAdminTabs(){
+            const adminTabs = adminModal.querySelectorAll('.tab');
+            const adminContents = adminModal.querySelectorAll('.tab-content');
+            adminTabs.forEach(tab => {
+                tab.addEventListener('click', () => {
+                    const tabId = tab.getAttribute('data-tab');
+                    adminTabs.forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    adminContents.forEach(c => {
+                        c.classList.remove('active');
+                        if (c.id === `${tabId}-tab`) c.classList.add('active');
+                    });
+                    
+                    // 根据标签页加载相应数据
+                    if (tabId === 'users') {
+                        loadUsersTable();
+                    } else if (tabId === 'conversations') {
+                        loadUsersForConversations();
+                    }
+                });
+            });
+        })();
+
+        // 检查系统是否已初始化（是否有超级管理员）
+        async function checkSystemInitialized() {
+            try {
+                const { db, firestore } = window.__firebase;
+                const { collection, getDocs, query, where } = firestore;
+                
+                const usersRef = collection(db, 'users');
+                const q = query(usersRef, where('role', '==', 'superadmin'));
+                const querySnapshot = await getDocs(q);
+                
+                const isInitialized = !querySnapshot.empty;
+                console.log('系统初始化状态:', isInitialized ? '已初始化' : '未初始化');
+                
+                return isInitialized;
+            } catch (e) {
+                console.error('检查系统初始化状态失败:', e);
+                return false;
+            }
+        }
+
+        // 加载用户表格
+        async function loadUsersTable() {
+            const tbody = document.getElementById('users-tbody');
+            tbody.innerHTML = '<tr><td colspan="5">加载中...</td></tr>';
+            
+            try {
+                const users = await window.__fbApi.adminGetAllUsers();
+                tbody.innerHTML = '';
+                
+                if (users.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5">暂无用户</td></tr>';
+                    return;
+                }
+                
+                users.forEach(user => {
+                    const tr = document.createElement('tr');
+                    const regTime = new Date(user.createdAt).toLocaleString();
+                    const isCurrentUser = window.__currentUser && user.id === window.__currentUser.uid;
+                    
+                    tr.innerHTML = `
+                        <td>${user.account || ''}</td>
+                        <td>${user.username || ''}</td>
+                        <td>
+                            <select class="role-select" data-userid="${user.id}" 
+                                    ${isCurrentUser || user.role === 'superadmin' ? 'disabled' : ''}>
+                                <option value="user" ${user.role === 'user' ? 'selected' : ''}>普通用户</option>
+                                <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>管理员</option>
+                                <option value="superadmin" ${user.role === 'superadmin' ? 'selected' : ''} disabled>超级管理员</option>
+                            </select>
+                        </td>
+                        <td>${regTime}</td>
+                        <td>
+                            <button class="btn btn-danger btn-sm delete-user" 
+                                    data-userid="${user.id}" 
+                                    ${isCurrentUser || user.role === 'superadmin' ? 'disabled' : ''}>
+                                删除
+                            </button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+                
+                // 添加角色变更事件
+                document.querySelectorAll('.role-select').forEach(select => {
+                    select.addEventListener('change', async (e) => {
+                        const userId = e.target.getAttribute('data-userid');
+                        const newRole = e.target.value;
+                        
+                        try {
+                            await window.__fbApi.adminUpdateUserRole(userId, newRole);
+                            showTag(document.getElementById('modal-admin-tag'), '角色更新成功', 'success', 2000);
+                        } catch (error) {
+                            showTag(document.getElementById('modal-admin-tag'), '更新失败: ' + error.message, 'error', 3000);
+                            // 重新加载表格以恢复正确状态
+                            loadUsersTable();
+                        }
+                    });
+                });
+                
+                // 添加删除用户事件
+                document.querySelectorAll('.delete-user').forEach(btn => {
+                    btn.addEventListener('click', async (e) => {
+                        const userId = e.target.getAttribute('data-userid');
+                        if (confirm('确定要删除此用户及其所有数据吗？此操作不可恢复！')) {
+                            try {
+                                await window.__fbApi.adminDeleteUser(userId);
+                                showTag(document.getElementById('modal-admin-tag'), '用户删除成功', 'success', 2000);
+                                loadUsersTable(); // 刷新表格
+                            } catch (error) {
+                                showTag(document.getElementById('modal-admin-tag'), '删除失败: ' + error.message, 'error', 3000);
+                            }
+                        }
+                    });
+                });
+                
+            } catch (error) {
+                tbody.innerHTML = `<tr><td colspan="5">加载失败: ${error.message}</td></tr>`;
+            }
+        }
+
+        // 加载用户选择框（用于对话管理）
+        async function loadUsersForConversations() {
+            const select = document.getElementById('user-select');
+            select.innerHTML = '<option value="">选择用户...</option>';
+            
+            try {
+                const users = await window.__fbApi.adminGetAllUsers();
+                users.forEach(user => {
+                    const option = document.createElement('option');
+                    option.value = user.id;
+                    option.textContent = `${user.username} (${user.account})`;
+                    select.appendChild(option);
+                });
+                
+                // 添加用户选择事件
+                select.addEventListener('change', (e) => {
+                    if (e.target.value) {
+                        loadUserConversations(e.target.value);
+                    } else {
+                        document.getElementById('conversations-tbody').innerHTML = '<tr><td colspan="5">请选择用户</td></tr>';
+                    }
+                });
+                
+            } catch (error) {
+                console.error('加载用户列表失败:', error);
+            }
+        }
+
+        // 加载用户对话
+        async function loadUserConversations(userId) {
+            const tbody = document.getElementById('conversations-tbody');
+            tbody.innerHTML = '<tr><td colspan="5">加载中...</td></tr>';
+            
+            try {
+                const conversations = await window.__fbApi.adminGetUserConversations(userId);
+                tbody.innerHTML = '';
+                
+                if (conversations.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5">该用户暂无对话</td></tr>';
+                    return;
+                }
+                
+                conversations.forEach(conv => {
+                    const tr = document.createElement('tr');
+                    const createTime = conv.createdAt ? new Date(conv.createdAt.toDate()).toLocaleString() : '未知';
+                    const updateTime = conv.updatedAt ? new Date(conv.updatedAt.toDate()).toLocaleString() : '未知';
+                    
+                    tr.innerHTML = `
+                        <td>${conv.id}</td>
+                        <td>${conv.title || '无标题'}</td>
+                        <td>${createTime}</td>
+                        <td>${updateTime}</td>
+                        <td>
+                            <button class="btn btn-danger btn-sm delete-conversation" 
+                                    data-userid="${userId}" 
+                                    data-convid="${conv.id}">删除</button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+                
+                // 添加删除对话事件
+                document.querySelectorAll('.delete-conversation').forEach(btn => {
+                    btn.addEventListener('click', async (e) => {
+                        const userId = e.target.getAttribute('data-userid');
+                        const conversationId = e.target.getAttribute('data-convid');
+                        
+                        if (confirm('确定要删除此对话吗？此操作不可恢复！')) {
+                            try {
+                                await window.__fbApi.adminDeleteConversation(userId, conversationId);
+                                showTag(document.getElementById('modal-admin-tag'), '对话删除成功', 'success', 2000);
+                                loadUserConversations(userId); // 刷新表格
+                            } catch (error) {
+                                showTag(document.getElementById('modal-admin-tag'), '删除失败: ' + error.message, 'error', 3000);
+                            }
+                        }
+                    });
+                });
+                
+            } catch (error) {
+                tbody.innerHTML = `<tr><td colspan="5">加载失败: ${error.message}</td></tr>`;
+            }
+        }
+
+        // 刷新用户列表
+        document.getElementById('refresh-users').addEventListener('click', loadUsersTable);
+
+        // 刷新对话列表
+        document.getElementById('refresh-conversations-admin').addEventListener('click', () => {
+            const userId = document.getElementById('user-select').value;
+            if (userId) {
+                loadUserConversations(userId);
+            }
+        });
+
+        // 打开设置弹窗
+        openSettingsBtn.addEventListener('click', () => {
+            settingsModal.style.display = 'flex';
+            // 移动端关闭侧边栏
+            if (window.innerWidth <= 768) {
+                toggleMobileSidebar();
+            }
+        });
+
+        // 账户弹窗
+        btnAuth.addEventListener('click', () => { authModal.style.display = 'flex'; });
+        closeAuthBtn.addEventListener('click', () => { authModal.style.display = 'none'; });
+        authModal.addEventListener('click', (e) => { if (e.target === authModal) authModal.style.display = 'none'; });
+
+        // 管理后台弹窗
+        btnAdmin.addEventListener('click', async () => {
+            adminModal.style.display = 'flex';
+            await refreshKeysTable();
+        });
+        closeAdminBtn.addEventListener('click', () => { adminModal.style.display = 'none'; });
+        adminModal.addEventListener('click', (e) => { if (e.target === adminModal) adminModal.style.display = 'none'; });
+
+        // 关闭设置弹窗
+        closeSettingsBtn.addEventListener('click', () => {
+            settingsModal.style.display = 'none';
+        });
+
+        // 点击弹窗外部关闭
+        settingsModal.addEventListener('click', (e) => {
+            if (e.target === settingsModal) {
+                settingsModal.style.display = 'none';
+            }
+        });
+
+        // 标签切换
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabId = tab.getAttribute('data-tab');
+                
+                // 更新标签状态
+                tabs.forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                
+                // 更新内容显示
+                tabContents.forEach(content => {
+                    content.classList.remove('active');
+                    if (content.id === `${tabId}-tab`) {
+                        content.classList.add('active');
+                    }
+                });
+            });
+        });
+
+        // 登录/注册 tab 与设置弹窗共用 class，因此需要限定处理作用域
+        (function bindAuthTabs(){
+            const authTabs = authModal.querySelectorAll('.tab');
+            const authContents = authModal.querySelectorAll('.tab-content');
+            authTabs.forEach(tab => {
+                tab.addEventListener('click', () => {
+                    const tabId = tab.getAttribute('data-tab');
+                    authTabs.forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    authContents.forEach(c => {
+                        c.classList.remove('active');
+                        if (c.id === `${tabId}-tab`) c.classList.add('active');
+                    });
+                });
+            });
+        })();
+
+        function showToast(msg, type = 'info', ms = 1600) {
+            toastEl.textContent = msg;
+            toastEl.className = `toast ${type}`;
+            toastEl.style.display = 'block';
+            clearTimeout(window.__toastTimer);
+            window.__toastTimer = setTimeout(() => { toastEl.style.display = 'none'; }, ms);
+        }
+
+        function showTag(el, msg, type = 'info', ms = 1600) {
+            if (!el) return;
+            el.textContent = msg;
+            el.className = `inline-tag ${type}`;
+            
+            // 特殊处理思考标签
+            if (el.id === 'tag-thinking') {
+                el.className = `inline-tag thinking-tag ${type}`;
+            }
+            
+            // 特殊处理弹窗标签
+            if (el.classList.contains('modal-tag')) {
+                el.className = `inline-tag modal-tag ${type}`;
+            }
+            
+            el.style.display = 'inline-block';
+            clearTimeout(el.__timer);
+            el.__timer = setTimeout(() => { el.style.display = 'none'; }, ms);
+        }
+
+        // 通过conversationId从侧边栏DOM中获取对话标题
+        function getConversationTitle(conversationId) {
+            // 尝试从侧边栏DOM中获取
+            const historyItem = document.querySelector(`.history-item[data-id="${conversationId}"]`);
+            if (historyItem) {
+                // 提取文本内容（去掉图标部分）
+                return historyItem.textContent.trim().replace(/^.*?\s/, '') || '对话';
+            }
+            
+            return '对话'; // 默认值
+        }
+
+        // 从云端加载对话列表
+        async function loadCloudConversations() {
+            if (!window.__currentUser) {
+                console.log('用户未登录，不加载云端对话');
+                return;
+            }
+            
+            try {
+                console.log('开始加载云端对话列表...');
+                
+                // 清空本地对话历史UI
+                chatHistory.innerHTML = '';
+                
+                const { db, firestore } = window.__firebase;
+                const { collection, query, orderBy, getDocs } = firestore;
+                
+                const user = window.__currentUser;
+                const conversationsRef = collection(db, 'users', user.uid, 'conversations');
+                const q = query(conversationsRef, orderBy('updatedAt', 'desc'));
+                const querySnapshot = await getDocs(q);
+                
+                console.log('云端对话数量:', querySnapshot.size);
+                
+                // 如果没有对话，创建默认对话
+                if (querySnapshot.empty) {
+                    console.log('没有找到云端对话，创建默认对话');
+                    await createDefaultConversationsIfNeeded();
+                    // 重新加载
+                    return await loadCloudConversations();
+                }
+                
+                // 创建对话历史项
+                let hasActive = false;
+                querySnapshot.forEach((doc) => {
+                    const convData = doc.data();
+                    const convId = doc.id;
+                    
+                    console.log('加载对话:', convId, convData.title);
+                    
+                    const historyItem = createHistoryItem(convId, convData.title, !hasActive);
+                    
+                    // 设置第一个对话为活跃
+                    if (!hasActive) {
+                        currentConversationId = convId;
+                        hasActive = true;
+                        
+                        console.log('设置活跃对话:', convId);
+                        
+                        // 加载这个对话的消息
+                        bindRealtime(convId);
+                    }
+                    
+                    chatHistory.appendChild(historyItem);
+                });
+                
+                console.log('云端对话加载完成，共', querySnapshot.size, '个对话');
+                
+            } catch (e) {
+                console.error('加载云端对话失败:', e);
+                showToast('加载对话失败: ' + e.message, 'error');
+                
+                // 降级到本地模式
+                displayLocalConversations();
+            }
+        }
+
+        // 显示本地默认对话
+        function displayLocalConversations() {
+            console.log('显示本地对话');
+            
+            // 清空现有对话历史
+            chatHistory.innerHTML = '';
+            
+            // 添加默认对话
+            const defaultConversations = [
+                { id: '1', title: '初次见面' },
+                { id: '2', title: '关于未来' },
+                { id: '3', title: '心情分享' }
+            ];
+            
+            let hasActive = false;
+            defaultConversations.forEach(conv => {
+                const historyItem = createHistoryItem(conv.id, conv.title, !hasActive);
+                
+                // 设置第一个对话为活跃
+                if (!hasActive) {
+                    currentConversationId = conv.id;
+                    hasActive = true;
+                    
+                    // 加载本地消息
+                    loadLocalConversation(conv.id);
+                }
+                
+                chatHistory.appendChild(historyItem);
+            });
+        }
+
+        // 在页面加载时恢复上次的对话
+        async function restoreLastConversation() {
+            if (!window.__currentUser) return;
+            
+            const lastConvId = localStorage.getItem('lastConversationId');
+            if (lastConvId) {
+                // 检查对话是否存在
+                const exists = await checkConversationExists(lastConvId);
+                if (exists) {
+                    currentConversationId = lastConvId;
+                    
+                    // 找到对应的历史项并设置为活跃
+                    const historyItem = document.querySelector(`.history-item[data-id="${lastConvId}"]`);
+                    if (historyItem) {
+                        document.querySelectorAll('.history-item').forEach(item => {
+                            item.classList.remove('active');
+                        });
+                        historyItem.classList.add('active');
+                        
+                        // 绑定实时订阅
+                        bindRealtime(lastConvId);
+                    }
+                }
+            }
+        }
+
+        // 刷新对话列表
+        document.getElementById('refresh-conversations').addEventListener('click', async () => {
+            if (window.__currentUser) {
+                showToast('正在刷新对话列表...', 'info');
+                await loadCloudConversations();
+                showToast('对话列表已刷新', 'success');
+            } else {
+                showToast('请先登录', 'error');
+                // 显示空白状态
+                displayEmptyState();
+            }
+        });
+
+
+         // 登录
+        document.getElementById('do-login').addEventListener('click', async () => {
+            try {
+                const account = document.getElementById('login-account').value.trim();
+                const password = document.getElementById('login-password').value;
+                if (!account || !password) throw new Error('请输入账号与密码');
+                if (!window.__fbApi) throw new Error('系统未就绪');
+                
+                // 使用弹窗内的标签
+                const modalTag = document.getElementById('modal-login-tag');
+                showTag(modalTag, '正在登录...', 'info', 6000);
+                
+                await window.__fbApi.login({ account, password });
+                showTag(modalTag, '登录成功', 'success', 2000);
+                
+                // 同时更新侧边栏标签（可选）
+                showTag(tagAuth, '登录成功', 'success', 2000);
+                
+                authModal.style.display = 'none';
+            } catch (e) {
+                const modalTag = document.getElementById('modal-login-tag');
+                showTag(modalTag, '登录失败：' + e.message, 'error', 3000);
+            }
+        });
+
+
+        // 调试对话功能
+        document.getElementById('debug-conversations').addEventListener('click', async () => {
+            if (!window.__currentUser) {
+                alert('请先登录');
+                return;
+            }
+            
+            try {
+                let debugInfo = '=== 对话调试信息 ===\n\n';
+                
+                // 检查当前对话
+                debugInfo += `当前对话ID: ${currentConversationId}\n`;
+                const exists = await checkConversationExists(currentConversationId);
+                debugInfo += `当前对话在云端: ${exists ? '存在' : '不存在'}\n`;
+                
+                if (exists) {
+                    const messages = await checkConversationMessages(currentConversationId);
+                    debugInfo += `当前对话消息数量: ${messages.length}\n`;
+                }
+                
+                // 检查所有对话
+                const { db, firestore } = window.__firebase;
+                const { collection, query, orderBy, getDocs } = firestore;
+                
+                const user = window.__currentUser;
+                const conversationsRef = collection(db, 'users', user.uid, 'conversations');
+                const q = query(conversationsRef, orderBy('updatedAt', 'desc'));
+                const querySnapshot = await getDocs(q);
+                
+                debugInfo += `\n云端对话总数: ${querySnapshot.size}\n`;
+                querySnapshot.forEach((doc) => {
+                    const convData = doc.data();
+                    debugInfo += `- ${doc.id}: ${convData.title || '无标题'} (${convData.updatedAt?.toDate?.() || '无时间'})\n`;
+                });
+                
+                console.log(debugInfo);
+                alert(debugInfo);
+            } catch (e) {
+                console.error('调试失败:', e);
+                alert('调试失败: ' + e.message);
+            }
+        });
+
+         // 退出登录
+         document.getElementById('do-logout').addEventListener('click', async () => {
+             try { 
+                await window.__fbApi.logout(); showTag(tagAuth, '已退出登录', 'success', 2000); 
+                // 同时更新侧边栏标签（可选）
+                showTag(tagAuth, '已退出登录', 'success', 2000);
+                authModal.style.display = 'none';
+            } catch {}
+         });
+
+         // 注册
+        document.getElementById('do-register').addEventListener('click', async () => {
+            try {
+                const account = document.getElementById('reg-account').value.trim();
+                const username = document.getElementById('reg-username').value.trim();
+                const password = document.getElementById('reg-password').value;
+                const confirmPassword = document.getElementById('reg-confirm').value;
+                const inviteKey = document.getElementById('reg-key').value.trim();
+                const modalTag = document.getElementById('modal-register-tag');
+
+                // 校验规则：账号只能为数字和字母，且至少6位，最大20位；用户名只能为字母数字下划线，且至少3位，最大20位；密码至少有一个大写字母、一个小写字母、一个数字和一个特殊字符最少6位，最大20位
+                // 实时提醒用户输入是否符合规则
+                if (!/^[a-zA-Z0-9]{6,20}$/.test(account)) {
+                    showTag(modalTag, '账号只能为数字和字母，且至少6位，最大20位', 'error', 3000);
+                    return;
+                }
+                if (!/^\w{3,20}$/.test(username)) {
+                    showTag(modalTag, '用户名只能为字母数字下划线，且至少3位，最大20位', 'error', 3000);
+                    return;
+                }
+                if (!/^.*(?=.{6,20})(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*_=+-]).*$/.test(password)) {
+                    showTag(modalTag, '密码至少有一个大写字母、一个小写字母、一个数字和一个特殊字符最少6位，最大20位', 'error', 3000);
+                    return;
+                }
+
+                if (password !== confirmPassword) {
+                    showTag(modalTag, '两次密码不一致', 'error', 3000);
+                    return;
+                }
+
+                showTag(modalTag, '正在注册...', 'info', 8000);
+                
+                const user = await window.__fbApi.register({ account, username, password, confirmPassword, inviteKey });
+                showTag(modalTag, '注册成功', 'success', 2000);
+                
+                // 同时更新侧边栏标签（可选）
+                showTag(tagAuth, '注册成功', 'success', 2000);
+                
+                authModal.style.display = 'none';
+
+            } catch (e) {
+                const modalTag = document.getElementById('modal-register-tag');
+                showTag(modalTag, '注册失败：' + e.message, 'error', 3000);
+            }
+        });
+
+        // 监听登录状态变化，更新 UI、加载设置
+        // 在登录状态变化中更新管理员权限检查
+        document.addEventListener('auth:changed', async (ev) => {
+            const user = ev.detail.user;
+            const btnText = document.getElementById('btn-auth-text');
+            if (user) {
+                // 显示用户昵称/用户名；若无显示名则读取用户档案 username
+                let display = user.displayName || '';
+                if (!display) {
+                    try {
+                        const p = await window.__fbApi.getUserProfile();
+                        if (p && p.username) display = p.username;
+                    } catch {}
+                }
+                btnText.textContent = display || '已登录';
+                
+                // 判断管理员权限
+                try {
+                    const profile = await window.__fbApi.getUserProfile();
+                    if (profile) {
+                        // 管理员和超级管理员都可以看到管理后台
+                        if (profile.role === 'admin' || profile.role === 'superadmin') {
+                            btnAdmin.style.display = 'block';
+                            
+                            // 如果是普通管理员，隐藏用户管理和对话管理标签
+                            if (profile.role === 'admin') {
+                                document.querySelectorAll('.tab[data-tab="users"], .tab[data-tab="conversations"]').forEach(tab => {
+                                    tab.style.display = 'none';
+                                });
+                            } else {
+                                // 超级管理员显示所有标签
+                                document.querySelectorAll('.tab').forEach(tab => {
+                                    tab.style.display = 'block';
+                                });
+                            }
+                        } else {
+                            btnAdmin.style.display = 'none';
+                        }
+                    } else {
+                        btnAdmin.style.display = 'none';
+                    }
+                } catch { 
+                    btnAdmin.style.display = 'none';
+                }
+                
+                // 加载个性化设置
+                try {
+                    const settings = await window.__fbApi.loadSettings();
+                    if (settings) applySettingsToUI(settings);
+                } catch {}
+                
+                // 检查并创建默认对话到云端
+                try {
+                    await createDefaultConversationsIfNeeded();
+                } catch (e) {
+                    console.error('创建默认对话失败:', e);
+                }
+                
+                // 加载云端对话列表
+                await loadCloudConversations();
+                
+            } else {
+                // 未登录状态 - 清空所有敏感信息
+                btnText.textContent = '登录 / 注册';
+                btnAdmin.style.display = 'none';
+                testApiBtn.style.display = 'inline-flex';
+                
+                // 清空对话列表
+                chatHistory.innerHTML = '';
+                
+                // 清空聊天消息
+                chatMessages.innerHTML = '';
+                
+                // 添加登录提示消息
+                const loginPrompt = document.createElement('div');
+                loginPrompt.className = 'message ai-message';
+                loginPrompt.innerHTML = '请登录后开始聊天';
+                chatMessages.appendChild(loginPrompt);
+                
+                // 清空本地对话数据
+                conversations = {};
+                currentConversationId = '1'; // 重置为默认ID
+                
+                // 取消实时订阅
+                if (unsubscribeRealtime) {
+                    try {
+                        unsubscribeRealtime();
+                        unsubscribeRealtime = null;
+                    } catch (e) {
+                        console.error('取消订阅失败:', e);
+                    }
+                }
+                
+                // 显示游客模式提示
+                showToast('已退出登录', 'info');
+            }
+        });
+
+        function applySettingsToUI(settings) {
+            console.log('从云端加载设置:', settings);
+            
+            if (settings.apiType) document.getElementById('api-type').value = settings.apiType;
+            if (settings.baseUrl) document.getElementById('base-url').value = settings.baseUrl;
+            if (settings.apiKey) document.getElementById('api-key').value = settings.apiKey;
+            if (settings.gfName) document.getElementById('gf-name').value = settings.gfName;
+            
+            // 恢复模型列表和选中的模型
+            if (settings.modelList && Array.isArray(settings.modelList)) {
+                console.log('恢复模型列表:', settings.modelList);
+                updateModelSelectWithData(settings.modelList, settings.model);
+            } else if (settings.model) {
+                // 兼容旧版本：只有选中模型，没有模型列表
+                const sel = document.getElementById('model-select');
+                const opt = Array.from(sel.options).find(o => o.value === settings.model);
+                if (opt) sel.value = settings.model;
+            }
+        }
+
+        // 使用数据更新模型选择下拉框
+        function updateModelSelectWithData(modelList, selectedModel = '') {
+            const modelSelect = document.getElementById('model-select');
+            
+            // 清空现有选项，但保留"请先检测可用模型"选项
+            const firstOption = modelSelect.options[0];
+            modelSelect.innerHTML = '';
+            if (firstOption && firstOption.value === '') {
+                modelSelect.appendChild(firstOption);
+            } else {
+                // 如果没有默认选项，创建一个
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = '请选择模型';
+                modelSelect.appendChild(defaultOption);
+            }
+            
+            if (modelList.length === 0) {
+                console.log('模型列表为空');
+                return;
+            }
+            
+            // 添加模型选项
+            modelList.forEach(model => {
+                // 跳过空值选项
+                if (!model.value || model.value === '') return;
+                
+                const option = document.createElement('option');
+                option.value = model.value;
+                option.textContent = model.text || model.value;
+                modelSelect.appendChild(option);
+            });
+            
+            // 设置选中的模型
+            if (selectedModel) {
+                const optionExists = Array.from(modelSelect.options).some(opt => opt.value === selectedModel);
+                if (optionExists) {
+                    modelSelect.value = selectedModel;
+                    console.log('设置选中模型:', selectedModel);
+                } else if (modelList.length > 0) {
+                    // 如果选中的模型不存在，选择第一个可用模型
+                    modelSelect.selectedIndex = 1; // 跳过第一个"请选择模型"选项
+                    console.log('选中模型不存在，选择第一个可用模型:', modelSelect.value);
+                }
+            }
+            // 更新状态显示
+            updateModelListStatus();
+            console.log('模型列表更新完成，选项数量:', modelSelect.options.length);
+        }
+
+
+        // 将设置保存到用户档案/游客存储
+        async function persistSettingsFromUI() {
+            const settings = {
+                apiType: document.getElementById('api-type').value,
+                apiKey: document.getElementById('api-key').value,
+                baseUrl: document.getElementById('base-url').value,
+                model: document.getElementById('model-select').value,
+                gfName: document.getElementById('gf-name').value,
+                // 新增：保存模型列表
+                modelList: Array.from(document.getElementById('model-select').options).map(option => ({
+                    value: option.value,
+                    text: option.textContent
+                })),
+                // 新增：保存模型检测时间
+                modelLastUpdated: Date.now()
+            };
+            
+            console.log('保存设置到云端:', settings);
+            
+            // 只有登录用户才保存到云端，游客只保存到本地
+            if (window.__currentUser) {
+                try { 
+                    await window.__fbApi.saveSettings(settings); 
+                    console.log('设置已保存到云端');
+                } catch (e) {
+                    console.error('保存设置到云端失败:', e);
+                }
+            } else {
+                // 游客模式只保存到本地
+                localStorage.setItem('settings:guest', JSON.stringify(settings));
+                console.log('设置已保存到本地存储');
+            }
+        }
+
+        // 在一些关键操作后保存设置
+        ['api-type','api-key','base-url','model-select','gf-name'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', persistSettingsFromUI);
+            if (el && el.tagName === 'INPUT') el.addEventListener('blur', persistSettingsFromUI);
+        });
+
+        // 管理后台：拉取与刷新 key 表格
+        async function refreshKeysTable() {
+            const tbody = document.getElementById('keys-tbody');
+            tbody.innerHTML = '';
+            try {
+                const list = await window.__fbApi.adminListKeys();
+                list.forEach(item => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td><input type="checkbox" data-id="${item.id}"></td>
+                        <td>${item.key}</td>
+                        <td>${item.account || ''}</td>
+                        <td>${item.username || ''}</td>
+                        <td>${item.used ? '是' : '否'}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (e) {
+                tbody.innerHTML = `<tr><td colspan="5">加载失败：${e.message}</td></tr>`;
+            }
+        }
+
+        // 生成 key
+        document.getElementById('admin-add-key').addEventListener('click', async () => {
+            try {
+                const account = document.getElementById('admin-add-account').value.trim();
+                
+                // 使用弹窗内的标签
+                const modalTag = document.getElementById('modal-admin-tag');
+                showTag(modalTag, '正在生成 key...', 'info', 6000);
+                
+                const key = await window.__fbApi.adminAddKey({ account });
+                await refreshKeysTable();
+                showTag(modalTag, '生成成功：' + key, 'success', 5000);
+                
+                // 同时更新侧边栏标签（可选）
+                showTag(tagAdmin, '生成成功', 'success', 3000);
+            } catch (e) { 
+                const modalTag = document.getElementById('modal-admin-tag');
+                showTag(modalTag, '生成失败：' + e.message, 'error', 3000);
+            }
+        });
+
+        // 删除选中
+        document.getElementById('admin-delete-selected').addEventListener('click', async () => {
+            try {
+                const checks = Array.from(document.querySelectorAll('#keys-tbody input[type="checkbox"]:checked'));
+                if (checks.length === 0) return;
+                const ids = checks.map(c => c.getAttribute('data-id'));
+                
+                // 使用弹窗内的标签
+                const modalTag = document.getElementById('modal-admin-tag');
+                showTag(modalTag, '正在删除...', 'info', 4000);
+                
+                await window.__fbApi.adminDeleteKeys(ids);
+                await refreshKeysTable();
+                showTag(modalTag, '删除完成', 'success', 2500);
+                
+                // 同时更新侧边栏标签（可选）
+                showTag(tagAdmin, '删除完成', 'success', 2000);
+            } catch (e) { 
+                const modalTag = document.getElementById('modal-admin-tag');
+                showTag(modalTag, '删除失败：' + e.message, 'error', 3000);
+            }
+        });
+
+        // 更新模型列表状态显示
+        function updateModelListStatus() {
+            const statusElement = document.getElementById('model-list-status');
+            const modelSelect = document.getElementById('model-select');
+            const optionCount = modelSelect.options.length - 1; // 减去默认选项
+            
+            if (optionCount > 0) {
+                statusElement.textContent = `已保存 ${optionCount} 个模型，可直接选择使用`;
+                statusElement.style.color = '#2e7d32'; // 成功颜色
+            } else {
+                statusElement.textContent = '未检测模型列表，请点击"检测可用模型"';
+                statusElement.style.color = 'var(--light-text)';
+            }
+        }
+
+        // 全选
+        document.getElementById('keys-check-all').addEventListener('change', (e) => {
+            const checks = document.querySelectorAll('#keys-tbody input[type="checkbox"]');
+            checks.forEach(c => c.checked = e.target.checked);
+        });
+
+        // 女友类型选择
+        gfOptions.forEach(option => {
+            option.addEventListener('click', () => {
+                gfOptions.forEach(opt => opt.classList.remove('selected'));
+                option.classList.add('selected');
+                
+                // 更新女友名称
+                const gfName = document.getElementById('gf-name');
+                let gfType = option.getAttribute('data-type');
+                
+                gfName.value = gfType === 'custom' ? (document.getElementById('gf-name').value || '胡桃') :
+                              gfType === '温柔' ? '小樱' : 
+                              gfType === '活泼' ? '小葵' : 
+                              gfType === '知性' ? '小雅' : '小萌';
+                
+                // 更新头像显示
+                const avatar = document.querySelector('.gf-avatar');
+                avatar.textContent = option.querySelector('.gf-avatar-small').textContent;
+                
+                // 更新女友信息显示
+                const gfInfo = document.querySelector('.gf-info h2');
+                if (gfType === 'custom') gfType = '自定义';
+                gfInfo.textContent = `${gfType}女友 · ${gfName.value}`;
+            });
+        });
+
+        // 测试API连接（所有用户都可以）
+        testApiBtn.addEventListener('click', async () => {
+            const apiType = document.getElementById('api-type').value;
+            const apiKey = document.getElementById('api-key').value;
+            const baseUrl = document.getElementById('base-url').value;
+            
+            if (!baseUrl) {
+                showTestResult('请输入Base URL', 'error');
+                return;
+            }
+
+            testApiBtn.disabled = true;
+            testApiBtn.textContent = '检测中...';
+            
+            try {
+                let models = [];
+                
+                if (apiType === 'ollama') {
+                    // 尝试获取Ollama模型列表
+                    const response = await fetch(`${baseUrl}/api/tags`);
+                    if (!response.ok) {
+                        throw new Error(`无法连接到Ollama: ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.models && Array.isArray(data.models)) {
+                        models = data.models.map(model => model.name);
+                    } else {
+                        throw new Error('无法解析Ollama模型列表');
+                    }
+                } else {
+                    // 尝试获取OpenAI兼容模型列表
+                    const headers = {};
+                    if (apiKey) {
+                        headers['Authorization'] = `Bearer ${apiKey}`;
+                    }
+                    
+                    const response = await fetch(`${baseUrl}/models`, { headers });
+                    if (!response.ok) {
+                        throw new Error(`API请求失败: ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.data && Array.isArray(data.data)) {
+                        models = data.data.map(model => model.id);
+                    } else {
+                        // 如果返回格式不同，尝试其他可能的格式
+                        console.warn('OpenAI兼容API返回了非预期格式，尝试解析...', data);
+                        if (Array.isArray(data)) {
+                            models = data.map(model => model.id || model.name);
+                        } else {
+                            throw new Error('无法解析模型列表，请检查API兼容性');
+                        }
+                    }
+                }
+                
+                // 更新模型选择下拉框
+                const modelOptions = models.map(model => ({
+                    value: model,
+                    text: model
+                }));
+                
+                updateModelSelectWithData(modelOptions);
+                
+                // 自动选择第一个模型（如果有）
+                const modelSelect = document.getElementById('model-select');
+                if (models.length > 0 && modelSelect.options.length > 1) {
+                    modelSelect.selectedIndex = 1; // 跳过第一个"请选择模型"选项
+                }
+                
+                showTestResult(`成功检测到 ${models.length} 个可用模型！`, 'success');
+                
+                // 保存设置到云端（包括模型列表）
+                await persistSettingsFromUI();
+                
+            } catch (error) {
+                console.error('模型检测错误:', error);
+                showTestResult(`检测失败: ${error.message}`, 'error');
+                
+                // 如果检测失败，提供一些默认模型
+                const defaultModels = apiType === 'ollama' 
+                    ? ['llama2', 'mistral', 'codellama'] 
+                    : ['gpt-3.5-turbo', 'gpt-4'];
+                
+                const defaultModelOptions = defaultModels.map(model => ({
+                    value: model,
+                    text: model
+                }));
+                
+                updateModelSelectWithData(defaultModelOptions);
+                showTestResult(`使用默认模型列表，实际模型可能不同`, 'error');
+            } finally {
+                testApiBtn.disabled = false;
+                testApiBtn.textContent = '检测可用模型';
+            }
+        });
+
+        // 更新模型选择下拉框
+        function updateModelSelect(models) {
+            const modelSelect = document.getElementById('model-select');
+            
+            // 清空现有选项
+            modelSelect.innerHTML = '';
+            
+            if (models.length === 0) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = '未检测到可用模型';
+                modelSelect.appendChild(option);
+                return;
+            }
+            
+            // 添加新选项
+            models.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model;
+                option.textContent = model;
+                modelSelect.appendChild(option);
+            });
+
+            const modelOptions = models.map(model => ({
+                value: model,
+                text: model
+            }));
+            updateModelSelectWithData(modelOptions);
+        }
+
+        // 模型选择变化时保存设置
+        document.getElementById('model-select').addEventListener('change', async function() {
+            console.log('模型选择变化:', this.value);
+            await persistSettingsFromUI();
+        });
+
+        // 显示API测试结果
+        function showTestResult(message, type) {
+            modelTestResult.textContent = message;
+            modelTestResult.className = `model-test-result ${type}`;
+            modelTestResult.style.display = 'block';
+            
+            setTimeout(() => {
+                modelTestResult.style.display = 'none';
+            }, 5000);
+        }
+
+        // 检查并创建默认对话到云端
+        async function createDefaultConversationsIfNeeded() {
+            if (!window.__currentUser) return;
+            
+            const { db, firestore } = window.__firebase;
+            const { doc, collection, getDocs, setDoc, serverTimestamp } = firestore;
+            
+            const defaultConversations = [
+                {
+                    id: '1',
+                    title: '初次见面',
+                    messages: [
+                        { role: 'assistant', content: '你好呀！我是你的AI女友小樱，很高兴认识你！今天有什么想和我分享的吗？', time: '10:30' },
+                        { role: 'user', content: '你好小樱！今天工作有点累，想和你聊聊天放松一下。', time: '10:31' },
+                        { role: 'assistant', content: '辛苦啦～工作再忙也要记得照顾好自己哦。要不要和我说说今天发生了什么？我会认真倾听的。', time: '10:31' }
+                    ]
+                },
+                {
+                    id: '2', 
+                    title: '关于未来',
+                    messages: [
+                        { role: 'assistant', content: '我们继续上次关于未来的话题吧！你对未来有什么期待呢？', time: '09:15' }
+                    ]
+                },
+                {
+                    id: '3',
+                    title: '心情分享', 
+                    messages: [
+                        { role: 'assistant', content: '今天心情怎么样？想和我分享些什么吗？', time: '14:20' }
+                    ]
+                }
+            ];
+            
+            for (const conv of defaultConversations) {
+                try {
+                    const { db, firestore } = window.__firebase;
+                    const { doc, getDoc, setDoc, updateDoc, serverTimestamp } = firestore;
+                    // 确保对话存在，并设置正确的标题
+                    const convRef = doc(db, 'users', window.__currentUser.uid, 'conversations', conv.id);
+                    const convSnap = await getDoc(convRef);
+                    
+                    if (!convSnap.exists()) {
+                        // 对话不存在，创建并设置标题
+                        console.log(`创建默认对话: ${conv.id} - ${conv.title}`);
+                        await setDoc(convRef, {
+                            title: conv.title, // 使用预设标题
+                            createdAt: serverTimestamp(),
+                            updatedAt: serverTimestamp()
+                        });
+                    } else {
+                        // 对话已存在，检查并修复标题
+                        const existingData = convSnap.data();
+                        if (existingData.title === '对话' || !existingData.title) {
+                            console.log(`修复对话标题: ${conv.id} - ${conv.title}`);
+                            await updateDoc(convRef, {
+                                title: conv.title,
+                                updatedAt: serverTimestamp()
+                            });
+                        }
+                    }
+                    
+                    // 检查是否已经有消息
+                    const messagesSnap = await getDocs(collection(convRef, 'messages'));
+                    
+                    // 如果没有消息，添加默认消息
+                    if (messagesSnap.empty) {
+                        console.log(`为对话 ${conv.id} 添加默认消息`);
+                        for (const msg of conv.messages) {
+                            await window.__fbApi.saveMessage(conv.id, msg);
+                        }
+                    }
+                } catch (e) {
+                    console.error(`创建对话 ${conv.id} 失败:`, e);
+                }
+            }
+        }
+
+        // 新对话
+        newChatBtn.addEventListener('click', async () => {
+            // 检查是否已登录
+            if (!window.__currentUser) {
+                showToast('请先登录后创建新对话', 'error');
+                return;
+            }
+            
+            // 生成新对话ID - 使用更唯一的时间戳
+            const newId = Date.now().toString();
+            currentConversationId = newId;
+            
+            console.log('创建新对话:', newId, '用户:', window.__currentUser);
+
+            try {
+                // 在云端创建对话
+                if (window.__currentUser) {
+                    console.log('正在创建云端对话...');
+                    // 使用"新对话"作为初始标题
+                    await window.__fbApi.ensureConversation(newId, '新对话');
+                    console.log('云端对话创建成功');
+                    
+                    // 添加欢迎消息到云端
+                    const now = new Date();
+                    const timeStr = `${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+                    console.log('正在保存欢迎消息到云端...');
+                    await window.__fbApi.saveMessage(newId, {
+                        role: 'assistant',
+                        content: '你好！我是你的AI女友，很高兴开始新的对话！今天想聊些什么呢？',
+                        time: timeStr
+                    });
+                    console.log('欢迎消息保存成功');
+                }
+                
+                // 更新本地状态
+                if (!conversations[newId]) {
+                    conversations[newId] = [];
+                }
+                
+                // 添加欢迎消息到本地
+                conversations[newId].push({
+                    role: 'assistant', 
+                    content: '你好！我是你的AI女友，很高兴开始新的对话！今天想聊些什么呢？',
+                    time: new Date().toLocaleTimeString(),
+                    processed: false
+                });
+                
+                // 创建新的对话历史项
+                const newHistoryItem = createHistoryItem(newId, '新对话', true);
+                
+                // 添加到历史记录列表的开头
+                chatHistory.insertBefore(newHistoryItem, chatHistory.firstChild);
+                
+                // 清空当前聊天，但保留"加载更多"按钮
+                chatMessages.innerHTML = '';
+                chatMessages.appendChild(loadMoreBtn);
+                
+                // 添加欢迎消息到UI
+                addMessage('你好！我是你的AI女友，很高兴开始新的对话！今天想聊些什么呢？', 'assistant');
+                
+                // 更新活跃状态
+                document.querySelectorAll('.history-item').forEach(item => {
+                    item.classList.remove('active');
+                });
+                newHistoryItem.classList.add('active');
+                
+                // 绑定云端实时订阅
+                bindRealtime(newId);
+                
+                // 移动端关闭侧边栏
+                if (window.innerWidth <= 768) {
+                    toggleMobileSidebar();
+                }
+                
+                // 显示成功消息
+                showToast('新对话创建成功', 'success');
+                
+            } catch (e) {
+                console.error('创建新对话失败:', e);
+                showToast('创建新对话失败: ' + e.message, 'error');
+            }
+        });
+
+        // 加载对话历史
+        async function loadConversation() {
+            const conversationId = this.getAttribute('data-id');
+            currentConversationId = conversationId;
+            
+            // 更新活跃状态
+            document.querySelectorAll('.history-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            this.classList.add('active');
+            
+            // 清空当前聊天，但保留"加载更多"按钮
+            chatMessages.innerHTML = '';
+            chatMessages.appendChild(loadMoreBtn);
+            
+            // 绑定云端实时订阅
+            bindRealtime(conversationId);
+            
+            // 移动端关闭侧边栏
+            if (window.innerWidth <= 768) {
+                toggleMobileSidebar();
+            }
+        }
+
+        // 添加分页状态调试函数
+        function debugPaginationState() {
+            console.log('=== 分页状态调试 ===');
+            console.log('当前对话ID:', currentConversationId);
+            console.log('latestFirstDocSnap:', latestFirstDocSnap ? '存在' : '不存在');
+            console.log('PAGE_SIZE:', PAGE_SIZE);
+            console.log('用户登录状态:', window.__currentUser ? '已登录' : '未登录');
+            console.log('Firebase 就绪状态:', window.__firebase?.ready ? '就绪' : '未就绪');
+        }
+
+        // 可以在需要时调用这个函数来调试
+        // debugPaginationState();
+
+        function clearMessagesUI() {
+            // 保留"加载更多"按钮在顶部
+            chatMessages.innerHTML = '';
+            chatMessages.appendChild(loadMoreBtn);
+            
+            // 重置加载更多按钮状态
+            loadMoreBtn.textContent = '加载更多';
+            loadMoreBtn.disabled = false;
+            loadMoreBtn.style.display = 'block';
+        }
+
+        function renderMessagesFromCloud(items, { replace = false } = {}) {
+            if (replace) clearMessagesUI();
+            if (items.length === 0) return;
+            
+            // 维护 first snap
+            latestFirstDocSnap = items[0]._snap || latestFirstDocSnap;
+            
+            console.log('渲染消息:', { 
+                itemsCount: items.length, 
+                hasFirstSnap: !!latestFirstDocSnap,
+                replace 
+            });
+            
+            items.forEach(msg => {
+                const messageDiv = document.createElement('div');
+                if (msg.role === 'assistant') messageDiv.className = 'message ai-message';
+                else if (msg.role === 'user') messageDiv.className = 'message user-message';
+                else messageDiv.className = 'message ai-message';
+
+                if (typeof msg.content === 'string' && msg.content.includes('<think>') && msg.role === 'assistant') {
+                    const processed = processThinkingContent(msg.content);
+                    messageDiv.innerHTML = createMessageHTML(processed);
+                } else {
+                    const messageText = document.createElement('div');
+                    if (msg.role === 'assistant') messageText.innerHTML = marked.parse(msg.content || '');
+                    else messageText.textContent = msg.content || '';
+                    messageDiv.appendChild(messageText);
+                }
+
+                const messageTime = document.createElement('div');
+                messageTime.className = 'message-time';
+                messageTime.textContent = msg.time || '';
+                messageDiv.appendChild(messageTime);
+
+                chatMessages.appendChild(messageDiv);
+            });
+            
+            // 只有在替换模式（初次加载）时才显示加载更多按钮
+            if (replace) {
+                loadMoreBtn.style.display = 'block';
+                loadMoreBtn.textContent = '加载更多';
+                loadMoreBtn.disabled = false;
+            }
+            
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // 检查对话是否存在于云端
+        async function checkConversationExists(conversationId) {
+            if (!window.__currentUser) return false;
+            
+            try {
+                const { db, firestore } = window.__firebase;
+                const { doc, getDoc } = firestore;
+                
+                const user = window.__currentUser;
+                const convRef = doc(db, 'users', user.uid, 'conversations', String(conversationId));
+                const snap = await getDoc(convRef);
+                
+                const exists = snap.exists();
+                console.log(`对话 ${conversationId} 在云端${exists ? '存在' : '不存在'}`);
+                return exists;
+            } catch (e) {
+                console.error('检查对话存在性失败:', e);
+                return false;
+            }
+        }
+
+        // 检查云端对话消息
+        async function checkConversationMessages(conversationId) {
+            if (!window.__currentUser) return [];
+            
+            try {
+                const { db, firestore } = window.__firebase;
+                const { doc, collection, getDocs, query, orderBy } = firestore;
+                
+                const user = window.__currentUser;
+                const convRef = doc(db, 'users', user.uid, 'conversations', String(conversationId));
+                const messagesRef = collection(convRef, 'messages');
+                const q = query(messagesRef, orderBy('createdAt', 'asc'));
+                const snap = await getDocs(q);
+                
+                const messages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                console.log(`对话 ${conversationId} 的云端消息数量:`, messages.length);
+                return messages;
+            } catch (e) {
+                console.error('检查对话消息失败:', e);
+                return [];
+            }
+        }
+
+        function bindRealtime(conversationId) {
+            // 取消之前订阅
+            if (unsubscribeRealtime) { 
+                try { 
+                    unsubscribeRealtime(); 
+                    console.log('取消之前的实时订阅');
+                } catch (e) {
+                    console.error('取消订阅失败:', e);
+                } 
+            }
+            
+            latestFirstDocSnap = null;
+            
+            // 订阅最新 PAGE_SIZE 条
+            if (window.__fbApi && window.__currentUser) {
+                console.log('开始实时订阅对话:', conversationId);
+                
+                unsubscribeRealtime = window.__fbApi.subscribeLatest(conversationId, PAGE_SIZE, (docs) => {
+                    console.log('收到实时消息更新，数量:', docs.length);
+                    
+                    // 只有在有云端数据时才替换，避免清空本地消息
+                    if (docs.length > 0) {
+                        renderMessagesFromCloud(docs, { replace: true });
+                    } else {
+                        // 如果没有云端数据，保持本地消息显示
+                        console.log('没有云端消息，保持本地显示');
+                    }
+                });
+            } else {
+                // 游客模式，只显示本地消息
+                console.log('游客模式，显示本地消息');
+                if (conversations[conversationId]) {
+                    console.log('本地对话消息数量:', conversations[conversationId].length);
+                }
+            }
+        }
+
+        // 调试对话项状态
+        function debugHistoryItemState() {
+            console.log('=== 对话项状态调试 ===');
+            const historyItems = document.querySelectorAll('.history-item');
+            console.log('对话项总数:', historyItems.length);
+            
+            historyItems.forEach((item, index) => {
+                const id = item.getAttribute('data-id');
+                const deleteBtn = item.querySelector('.delete-conversation-btn');
+                const titleElement = item.querySelector('.history-item-text');
+                
+                console.log(`对话项 ${index + 1}:`, {
+                    id,
+                    hasDeleteBtn: !!deleteBtn,
+                    hasTitleElement: !!titleElement,
+                    title: titleElement ? titleElement.textContent : '无标题元素'
+                });
+            });
+        }
+
+        // 在需要调试时调用这个函数
+        // debugHistoryItemState();
+
+
+        loadMoreBtn.addEventListener('click', async () => {
+            if (!window.__fbApi || !latestFirstDocSnap) {
+                console.log('无法加载更多: 未登录或没有快照');
+                return;
+            }
+            
+            try {
+                console.log('正在加载更早的消息...');
+                const { items, first } = await window.__fbApi.loadOlder(currentConversationId, latestFirstDocSnap, PAGE_SIZE);
+                console.log('加载结果:', { itemsCount: items.length, hasFirst: !!first });
+                
+                if (items.length === 0) {
+                    // 真正没有更多消息时才显示"没有更早消息"
+                    loadMoreBtn.textContent = '没有更早消息';
+                    loadMoreBtn.disabled = true;
+                    console.log('没有更早的消息了');
+                    return;
+                }
+                
+                // 如果有消息，创建文档片段并添加到UI
+                const frag = document.createDocumentFragment();
+                items.forEach(msg => {
+                    const messageDiv = document.createElement('div');
+                    if (msg.role === 'assistant') {
+                        messageDiv.className = 'message ai-message';
+                    } else if (msg.role === 'user') {
+                        messageDiv.className = 'message user-message';
+                    } else {
+                        messageDiv.className = 'message ai-message';
+                    }
+                    
+                    const messageText = document.createElement('div');
+                    if (msg.role === 'assistant') {
+                        messageText.innerHTML = marked.parse(msg.content || '');
+                    } else {
+                        messageText.textContent = msg.content || '';
+                    }
+                    messageDiv.appendChild(messageText);
+                    
+                    const messageTime = document.createElement('div');
+                    messageTime.className = 'message-time';
+                    messageTime.textContent = msg.time || '';
+                    messageDiv.appendChild(messageTime);
+                    
+                    frag.appendChild(messageDiv);
+                });
+                
+                // 在"加载更多"按钮之前插入新消息
+                chatMessages.insertBefore(frag, loadMoreBtn);
+                
+                // 更新快照
+                latestFirstDocSnap = first || latestFirstDocSnap;
+                console.log('快照已更新，可以继续加载更多');
+                
+                // 如果返回的消息数量小于页面大小，说明这是最后一页
+                if (items.length < PAGE_SIZE) {
+                    loadMoreBtn.textContent = '没有更早消息';
+                    loadMoreBtn.disabled = true;
+                    console.log('已到达最早的消息');
+                } else {
+                    // 否则保持按钮可点击状态
+                    loadMoreBtn.textContent = '加载更多';
+                    loadMoreBtn.disabled = false;
+                }
+                
+            } catch (e) {
+                console.error('加载失败:', e);
+                loadMoreBtn.textContent = '加载失败，点击重试';
+                showToast('加载消息失败: ' + e.message, 'error');
+            }
+        });
+
+        // 为现有历史项添加点击事件
+        historyItems.forEach(item => {
+            item.addEventListener('click', loadConversation);
+        });
+
+        // 保存自定义设置
+        saveCustomBtn.addEventListener('click', () => {
+            const personality = document.getElementById('personality').value;
+            const background = document.getElementById('background').value;
+            const speechStyle = document.getElementById('speech-style').value;
+            
+            if (!personality || !background || !speechStyle) {
+                alert('请填写所有自定义字段');
+                return;
+            }
+            
+            // 创建或激活自定义女友选项
+            activateCustomGirlfriend();
+            
+            // 保存设置到本地存储
+            localStorage.setItem('customGirlfriend', JSON.stringify({
+                personality,
+                background,
+                speechStyle
+            }));
+            
+            alert('自定义设置已保存！');
+            settingsModal.style.display = 'none';
+        });
+
+        // 创建一个函数来获取当前所有女友选项
+        function getAllGfOptions() {
+            return document.querySelectorAll('.gf-option');
+        }
+
+        // 然后在需要的地方使用这个函数
+        function activateCustomGirlfriend() {
+            let customOption = document.querySelector('.gf-option[data-type="custom"]');
+            if (!customOption) {
+                // 创建自定义女友选项
+                customOption = document.createElement('div');
+                customOption.className = 'gf-option';
+                customOption.setAttribute('data-type', 'custom');
+                customOption.innerHTML = `
+                    <div class="gf-avatar-small">💝</div>
+                    <div>自定义女友</div>
+                `;
+                document.querySelector('.gf-options').appendChild(customOption);
+                
+                // 为自定义选项添加点击事件
+                customOption.addEventListener('click', function() {
+                    getAllGfOptions().forEach(opt => opt.classList.remove('selected'));
+                    this.classList.add('selected');
+                    
+                    // 更新女友信息显示
+                    const gfName = document.getElementById('gf-name').value || '胡桃';
+                    const avatar = document.querySelector('.gf-avatar');
+                    avatar.textContent = '💝';
+                    const gfInfo = document.querySelector('.gf-info h2');
+                    gfInfo.textContent = `自定义女友 · ${gfName}`;
+                });
+            }
+            
+            // 选中自定义女友
+            getAllGfOptions().forEach(opt => opt.classList.remove('selected'));
+            customOption.classList.add('selected');
+            
+            // 更新显示
+            const gfName = document.getElementById('gf-name').value || '小爱';
+            const avatar = document.querySelector('.gf-avatar');
+            avatar.textContent = '💝';
+            const gfInfo = document.querySelector('.gf-info h2');
+            gfInfo.textContent = `自定义女友 · ${gfName}`;
+        }
+
+        // 清除对话历史
+        document.getElementById('clear-history').addEventListener('click', () => {
+            if (confirm('确定要清除所有对话历史吗？此操作不可恢复。')) {
+                conversations = {};
+                currentConversationId = Date.now();
+                conversations[currentConversationId] = [];
+                chatMessages.innerHTML = '';
+                chatHistory.innerHTML = '';
+                
+                // 重新添加新对话
+                const newHistoryItem = document.createElement('div');
+                newHistoryItem.className = 'history-item active';
+                newHistoryItem.setAttribute('data-id', currentConversationId);
+                newHistoryItem.innerHTML = '<i class="fas fa-comment"></i> 新对话';
+                chatHistory.appendChild(newHistoryItem);
+                newHistoryItem.addEventListener('click', loadConversation);
+                
+                addMessage('你好！我是你的AI女友，很高兴开始新的对话！今天想聊些什么呢？', 'assistant');
+            }
+        });
+
+        // 发送消息事件
+        sendBtn.addEventListener('click', sendMessage);
+        
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+
+        // 加载本地对话消息
+        function loadLocalConversation(conversationId) {
+            // 清空当前聊天
+            chatMessages.innerHTML = '';
+            
+            // 加载对话记录（本地）
+            if (conversations[conversationId]) {
+                conversations[conversationId].forEach(msg => {
+                    if (msg.role === 'system') return; // 跳过system消息
+                    
+                    const messageDiv = document.createElement('div');
+                    if (msg.role === 'assistant') {
+                        messageDiv.className = 'message ai-message';
+                    } else if (msg.role === 'user') {
+                        messageDiv.className = 'message user-message';
+                    } else {
+                        messageDiv.className = 'message ai-message';
+                    }
+                    
+                    const messageText = document.createElement('div');
+                    if (msg.role === 'assistant') {
+                        messageText.innerHTML = marked.parse(msg.content);
+                    } else {
+                        messageText.textContent = msg.content;
+                    }
+                    messageDiv.appendChild(messageText);
+                    
+                    const messageTime = document.createElement('div');
+                    messageTime.className = 'message-time';
+                    messageTime.textContent = msg.time;
+                    messageDiv.appendChild(messageTime);
+                    
+                    chatMessages.appendChild(messageDiv);
+                });
+            } else {
+                // 如果没有记录，添加欢迎消息
+                addMessage('你好！我们开始新的对话吧！', 'assistant');
+            }
+            
+            // 滚动到底部
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // 显示空白状态（未登录时）
+        function displayEmptyState() {
+            console.log('显示空白状态');
+            
+            // 清空对话历史
+            chatHistory.innerHTML = '';
+            
+            // 添加空白状态提示
+            const emptyState = document.createElement('div');
+            emptyState.className = 'empty-state';
+            emptyState.innerHTML = `
+                <div style="text-align: center; padding: 20px; color: var(--light-text);">
+                    <i class="fas fa-comments" style="font-size: 2rem; margin-bottom: 10px; opacity: 0.5;"></i>
+                    <p>登录后查看对话历史</p>
+                </div>
+            `;
+            chatHistory.appendChild(emptyState);
+            
+            // 清空聊天消息，显示欢迎消息
+            chatMessages.innerHTML = '';
+            const welcomeMessage = document.createElement('div');
+            welcomeMessage.className = 'message ai-message';
+            welcomeMessage.innerHTML = `
+                欢迎使用AI女友！请登录后开始聊天。
+                <div class="message-time">${new Date().getHours()}:${new Date().getMinutes().toString().padStart(2, '0')}</div>
+            `;
+            chatMessages.appendChild(welcomeMessage);
+        }
+
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', async () => {
+            // 检查是否有保存的自定义设置
+            const savedCustom = localStorage.getItem('customGirlfriend');
+            if (savedCustom) {
+                const customData = JSON.parse(savedCustom);
+                document.getElementById('personality').value = customData.personality || '';
+                document.getElementById('background').value = customData.background || '';
+                document.getElementById('speech-style').value = customData.speechStyle || '';
+            }
+
+            // 确保加载更多按钮初始状态正确
+            loadMoreBtn.textContent = '加载更多';
+            loadMoreBtn.disabled = false;
+            loadMoreBtn.style.display = 'none'; // 初始隐藏，等有消息时显示
+
+            // 设置背景视频
+            const video = document.getElementById('background-video');
+            video.playbackRate = 0.7;
+            
+            // 等待Firebase初始化完成
+            const checkFirebaseReady = () => {
+                return new Promise((resolve) => {
+                    const check = () => {
+                        if (window.__firebase && window.__firebase.ready) {
+                            resolve();
+                        } else {
+                            setTimeout(check, 100);
+                        }
+                    };
+                    check();
+                });
+            };
+            
+            try {
+                await checkFirebaseReady();
+                console.log('Firebase已就绪，检查登录状态');
+                
+                // 如果用户已登录，加载云端对话
+                if (window.__currentUser) {
+                    console.log('用户已登录，加载云端对话');
+                    await loadCloudConversations();
+                } else {
+                    console.log('用户未登录，显示空白状态');
+                    // 显示空白状态，不显示任何对话
+                    displayEmptyState();
+                }
+            } catch (e) {
+                console.error('初始化失败:', e);
+                // 降级到空白状态
+                displayEmptyState();
+            }
+            
+            // 在移动设备上默认隐藏侧边栏
+            if (window.innerWidth <= 768) {
+                sidebar.classList.remove('open');
+                mobileOverlay.classList.remove('active');
+                document.body.style.overflow = '';
+            } else {
+                sidebar.classList.remove('collapsed');
+                chatContainer.classList.remove('sidebar-open');
+            }
+            
+            // 添加触摸事件支持
+            if ('ontouchstart' in window) {
+                // 为消息添加触摸反馈
+                document.querySelectorAll('.history-item').forEach(item => {
+                    item.addEventListener('touchstart', function() {
+                        this.style.backgroundColor = '#ffd6e6';
+                    });
+                    item.addEventListener('touchend', function() {
+                        this.style.backgroundColor = '';
+                    });
+                });
+            }
+
+            updateModelListStatus();
+        });
+
+        // 简单安全防护：阻止常见快捷键与右键菜单（仅提示，并不绝对安全）
+        // document.addEventListener('contextmenu', (e) => {
+        //     e.preventDefault();
+        //     alert('为保护应用安全，已禁用右键菜单。');
+        // });
+        // document.addEventListener('keydown', (e) => {
+        //     if ((e.ctrlKey && e.shiftKey && ['I','J','C'].includes(e.key.toUpperCase())) || e.key === 'F12') {
+        //         e.preventDefault();
+        //         alert('已拦截调试快捷键。');
+        //     }
+        // });
+
+        // 窗口大小变化时调整布局
+        window.addEventListener('resize', () => {
+            if (window.innerWidth <= 768) {
+                // 移动端布局
+                sidebar.classList.remove('collapsed');
+                chatContainer.classList.remove('sidebar-open');
+                
+                // 如果侧边栏是打开的，关闭它
+                if (sidebar.classList.contains('open')) {
+                    toggleMobileSidebar();
+                }
+            } else {
+                // 桌面端布局
+                sidebar.classList.remove('open');
+                mobileOverlay.classList.remove('active');
+                document.body.style.overflow = '';
+                
+                // 恢复侧边栏显示
+                sidebar.classList.remove('collapsed');
+                chatContainer.classList.remove('sidebar-open');
+            }
+        });
+
+        // 手动刷新对话列表（可以在控制台调用测试）
+        window.refreshConversations = async function() {
+            await loadCloudConversations();
+            showToast('对话列表已刷新', 'success');
+        };
+    </script>
+</body>
+</html>
