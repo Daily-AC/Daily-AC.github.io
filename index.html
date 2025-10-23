@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+    <!-- 国外源 -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1803,12 +1804,23 @@
                         </small>
                     </div>
                     
+                    <div class="form-group">
+                        <label>代理设置</label>
+                        <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+                            <button class="btn btn-secondary" id="toggle-proxy">开启代理</button>
+                            <small style="color: var(--light-text);">用于解决API访问问题</small>
+                        </div>
+                    </div>
+
+
                     <!-- 在API设置tab中添加调试按钮 -->
                     <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px;">
                         <button class="btn btn-primary" id="test-api">检测可用模型</button>
                         <button class="btn btn-secondary" id="clear-history">清除对话历史</button>
                         <button class="btn btn-secondary" id="debug-conversations" style="display: none;">调试对话</button>
                     </div>
+
+                    
 
                     <div class="model-test-result" id="model-test-result"></div>
                 </div>
@@ -2079,10 +2091,71 @@
         const closeAuthBtn = document.getElementById('close-auth');
         const closeAdminBtn = document.getElementById('close-admin');
         const toastEl = document.getElementById('toast');
-         const tagAuth = document.getElementById('tag-auth');
-         const tagAdmin = document.getElementById('tag-admin');
-         const tagSend = document.getElementById('tag-send');
-         const tagThinking = document.getElementById('tag-thinking');
+        const tagAuth = document.getElementById('tag-auth');
+        const tagAdmin = document.getElementById('tag-admin');
+        const tagSend = document.getElementById('tag-send');
+        const tagThinking = document.getElementById('tag-thinking');
+        let useProxy = false; // 可以做成配置选项
+        const proxyUrl = 'https://ai-girlfriend-porxy.qifenzhiyi142857.workers.dev'; // 你的代理服务地址
+        // 获取代理开关按钮
+        const toggleProxyBtn = document.getElementById('toggle-proxy');
+        // 更新代理按钮状态
+        function updateProxyButton() {
+            if (useProxy) {
+                toggleProxyBtn.textContent = '关闭代理';
+                toggleProxyBtn.classList.remove('btn-secondary');
+                toggleProxyBtn.classList.add('btn-primary');
+            } else {
+                toggleProxyBtn.textContent = '开启代理';
+                toggleProxyBtn.classList.remove('btn-primary');
+                toggleProxyBtn.classList.add('btn-secondary');
+            }
+        }
+
+        // 切换代理状态
+        function toggleProxy() {
+            useProxy = !useProxy;
+            updateProxyButton();
+            
+            // 保存代理设置到本地存储
+            const settings = {
+                apiType: document.getElementById('api-type').value,
+                apiKey: document.getElementById('api-key').value,
+                baseUrl: document.getElementById('base-url').value,
+                model: document.getElementById('model-select').value,
+                gfName: document.getElementById('gf-name').value,
+                useProxy: useProxy, // 保存代理状态
+                modelList: Array.from(document.getElementById('model-select').options).map(option => ({
+                    value: option.value,
+                    text: option.textContent
+                })),
+                modelLastUpdated: Date.now()
+            };
+            
+            // 保存设置
+            if (window.__currentUser) {
+                try { 
+                    window.__fbApi.saveSettings(settings); 
+                } catch (e) {
+                    console.error('保存设置到云端失败:', e);
+                }
+            } else {
+                localStorage.setItem('settings:guest', JSON.stringify(settings));
+            }
+            
+            showToast(`代理已${useProxy ? '开启' : '关闭'}`, 'success');
+        }
+
+        // 从设置中加载代理状态
+        function loadProxyFromSettings(settings) {
+            if (settings.useProxy !== undefined) {
+                useProxy = settings.useProxy;
+            }
+            updateProxyButton();
+        }
+
+        // 绑定代理开关按钮点击事件
+        toggleProxyBtn.addEventListener('click', toggleProxy);
 
         // 应用状态
         let currentConversationId = 1;
@@ -2444,16 +2517,32 @@
                 if (apiKey) {
                     headers['Authorization'] = `Bearer ${apiKey}`;
                 }
-
-                const response = await fetch(`${baseUrl}/chat/completions`, {
-                    method: 'POST',
-                    headers: headers,
-                    body: JSON.stringify({
-                        model: model,
-                        messages: conversationHistory,
-                        stream: true
-                    })
-                });
+                
+                let response;
+                if (useProxy) {
+                        // 通过 Cloudflare Workers 代理发送请求
+                        // 注意：这里将完整的API地址作为target参数传递
+                        const apiUrlWithProxy = `${proxyUrl}?target=${encodeURIComponent(baseUrl + '/chat/completions')}`;
+                        response = await fetch(apiUrlWithProxy, {
+                            method: 'POST',
+                            headers: apiKey ? { "Content-Type": "application/json", 'Authorization': `Bearer ${apiKey}` } : {},
+                            body: JSON.stringify({
+                                model: model,
+                                messages: conversationHistory,
+                                stream: true
+                            })
+                        });
+                    } else {
+                        response = await fetch(`${baseUrl}/chat/completions`, {
+                            method: 'POST',
+                            headers: headers,
+                            body: JSON.stringify({
+                                model: model,
+                                messages: conversationHistory,
+                                stream: true
+                            })
+                        });
+                    }
 
                 if (!response.ok) {
                     let errorDetail = '';
@@ -3239,6 +3328,7 @@
                 
                 authModal.style.display = 'none';
             } catch (e) {
+                console.error('登录失败:', e);
                 const modalTag = document.getElementById('modal-login-tag');
                 showTag(modalTag, '登录失败：' + e.message, 'error', 3000);
             }
@@ -3450,6 +3540,12 @@
             if (settings.apiKey) document.getElementById('api-key').value = settings.apiKey;
             if (settings.gfName) document.getElementById('gf-name').value = settings.gfName;
             
+            // 恢复代理设置
+            if (settings.useProxy !== undefined) {
+                useProxy = settings.useProxy;
+                updateProxyButton();
+            }
+
             // 恢复模型列表和选中的模型
             if (settings.modelList && Array.isArray(settings.modelList)) {
                 console.log('恢复模型列表:', settings.modelList);
@@ -3521,6 +3617,7 @@
                 baseUrl: document.getElementById('base-url').value,
                 model: document.getElementById('model-select').value,
                 gfName: document.getElementById('gf-name').value,
+                useProxy: useProxy, // 包含代理状态
                 // 新增：保存模型列表
                 modelList: Array.from(document.getElementById('model-select').options).map(option => ({
                     value: option.value,
@@ -3700,12 +3797,32 @@
                     }
                 } else {
                     // 尝试获取OpenAI兼容模型列表
+                    // 修改你的请求代码，添加代理选项
+                    // qiqiqi
                     const headers = {};
                     if (apiKey) {
                         headers['Authorization'] = `Bearer ${apiKey}`;
                     }
-                    
-                    const response = await fetch(`${baseUrl}/models`, { headers });
+
+                    let response;
+        
+                    if (useProxy) {
+                        // 通过 Cloudflare Workers 代理发送请求
+                        // 注意：这里将完整的API地址作为target参数传递
+                        const apiUrlWithProxy = `${proxyUrl}?target=${encodeURIComponent(baseUrl + '/models')}`;
+                        response = await fetch(apiUrlWithProxy, {
+                            method: 'GET',
+                            headers: apiKey ? { "Content-Type": "application/json", 'Authorization': `Bearer ${apiKey}` } : {}
+                        });
+                    } else {
+                        // 直接请求（可能失败）
+                        const headers = {};
+                        if (apiKey) {
+                            headers['Authorization'] = `Bearer ${apiKey}`;
+                        }
+                        response = await fetch(`${baseUrl}/models`, { headers });
+                    }
+
                     if (!response.ok) {
                         throw new Error(`API请求失败: ${response.status}`);
                     }
@@ -3751,7 +3868,7 @@
                 // 如果检测失败，提供一些默认模型
                 const defaultModels = apiType === 'ollama' 
                     ? ['llama2', 'mistral', 'codellama'] 
-                    : ['gpt-3.5-turbo', 'gpt-4'];
+                    : [''下方为小马算力平台模型提供，请勿选择',', 'deepseek-r1-0528', 'deepseek-v3-0324', 'qwen3-coder-480b', 'qwen3-32b', 'qwen3-8b', 'glm-4.5', 'kimi-k2-instruct-0905', 'deepseek-v3.1', 'hunyuan-a13b-instruct', 'qwen3-next-80b-a3b-instruct', 'deepseek-v3.2-exp', 'deepseek-v3.1-terminus', 'qwen3-vl-235b-a22b-instruct', 'qwen3-vl-30b-a3b-instruct', '下方为Agent Router平台模型提供，请勿选择', 'deepseek-v3.2', 'glm-4.6', 'gpt-5', 'grok-code-fast-1'];
                 
                 const defaultModelOptions = defaultModels.map(model => ({
                     value: model,
@@ -4458,6 +4575,21 @@
                     check();
                 });
             };
+
+            // 尝试从本地存储加载代理设置
+            try {
+                const savedSettings = localStorage.getItem('settings:guest');
+                if (savedSettings) {
+                    const settings = JSON.parse(savedSettings);
+                    if (settings.useProxy !== undefined) {
+                        useProxy = settings.useProxy;
+                        updateProxyButton();
+                    }
+                }
+            } catch (e) {
+                console.error('加载代理设置失败:', e);
+            }
+
             
             try {
                 await checkFirebaseReady();
@@ -4505,16 +4637,16 @@
         });
 
         // 简单安全防护：阻止常见快捷键与右键菜单（仅提示，并不绝对安全）
-        // document.addEventListener('contextmenu', (e) => {
-        //     e.preventDefault();
-        //     alert('为保护应用安全，已禁用右键菜单。');
-        // });
-        // document.addEventListener('keydown', (e) => {
-        //     if ((e.ctrlKey && e.shiftKey && ['I','J','C'].includes(e.key.toUpperCase())) || e.key === 'F12') {
-        //         e.preventDefault();
-        //         alert('已拦截调试快捷键。');
-        //     }
-        // });
+        document.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            alert('为保护应用安全，已禁用右键菜单。');
+        });
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey && e.shiftKey && ['I','J','C'].includes(e.key.toUpperCase())) || e.key === 'F12') {
+                e.preventDefault();
+                alert('已拦截调试快捷键。');
+            }
+        });
 
         // 窗口大小变化时调整布局
         window.addEventListener('resize', () => {
